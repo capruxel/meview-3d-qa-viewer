@@ -12,6 +12,13 @@ offset values are inclusive.
 Diagnostic displacement, velocity, acceleration, and pooling layers are QA views,
 not the Notebook's 3456-dimensional feature vector.
 
+## Interface preview
+
+The screenshot below shows the viewer with the sequence browser, mesh-locked raw
+video, 3D mesh viewport, active-frame timeline, and playback controls.
+
+![MEVIEW 3D QA Viewer interface](assets/meview-3d-qa-viewer.webp)
+
 ## Usage
 
 This repository runs independently. It has no dependency on a specific host
