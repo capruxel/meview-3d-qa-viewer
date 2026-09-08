@@ -32,13 +32,18 @@ data-root/
 Each mesh sequence uses `variant/subject/video` as its identity. The viewer
 recognizes these filename patterns inside each sequence directory:
 
-- `<frame>_frontal_vertices.npy`: numeric vertex coordinates with shape `(3, N)`.
-- `<frame>_frontal_mesh.obj`: fixed topology and optional per-vertex color.
-- `<frame>_frontal_illustration.jpg`: frame illustration used for asset checks.
+- `<frame>_frontal_vertices.npy`: non-empty numeric vertex coordinates with
+  shape `(3, N)`. Values must be finite; `N` must stay constant within a
+  sequence and match the OBJ vertex count.
+- `<frame>_frontal_mesh.obj`: fixed topology with one `v` line per vertex in
+  `x y z r g b` format. The first OBJ establishes the topology; each frame's OBJ
+  supplies the colors used by the viewer.
+- `<frame>_frontal_illustration.jpg`: required for frame completeness checks;
+  the viewer does not display this image.
 
-The OBJ topology must remain fixed within a sequence. The first OBJ establishes
-the topology; each NPY updates only the mesh coordinates. The audit command
-reports missing or inconsistent assets instead of repairing them.
+Every numbered frame must contain all three assets. Missing any one of them
+makes the sequence invalid for viewer loading. The audit command reports
+missing or inconsistent assets instead of repairing them.
 
 ## Active-frame metadata
 
@@ -58,12 +63,14 @@ infer active ranges from filenames.
 
 - `groups_v2.npy`, `video_ids_v2.npy`, and `labels_v2.npy` (and the V3 equivalents)
   provide sequence labels in the inspector.
-- `raw/me-cuts/cuts/<subject>-<video>.mp4` enables mesh-locked raw-video playback.
-  The system `ffprobe` executable must be available.
+- `raw/me-cuts/cuts/<subject>-<integer-video>.mp4` enables mesh-locked raw-video
+  playback. The video directory `01` maps to a file such as `sub01-1.mp4`.
+  The system `ffprobe` executable must be available on `PATH`.
 - `results/metrics.csv` and `results/predictions.csv` can be passed with
   `--results-dir`.
 - `landmarks/v2.json` and `landmarks/v3.json` can be passed with
   `--landmarks-root` after a validated vertex mapping exists.
 
-All optional inputs can be omitted. Mesh audit and playback remain available
-when results, raw video, or landmark mappings are not present.
+All optional inputs can be omitted. Mesh audit and mesh-only playback remain
+available when results, raw video, or landmark mappings are not present. Raw
+video playback requires the matching MP4 and `ffprobe`.
