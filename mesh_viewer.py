@@ -19,8 +19,8 @@ import torch
 import torch.nn.functional as F
 from pyvistaqt import QtInteractor
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -50,9 +51,11 @@ from PySide6.QtWidgets import (
 )
 
 from mesh_data import FrameCache, SequenceIndex, load_active_frames, scan_sequences
+from mediapipe_data import MediaPipeFrame, load_mediapipe_frame, mediapipe_frame_path
 
 LABELS = {0: "Positive", 1: "Negative", 2: "Surprise"}
 MOTION_CLIM = (0.0, 1.0)  # Fixed QA legend; this is not the 3456-D feature scale.
+
 
 
 @dataclass(frozen=True)
@@ -359,8 +362,77 @@ class ActiveFrameSlider(QSlider):
         painter.end()
 
 
+class LandmarkImageWidget(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setMinimumSize(320, 240)
+        self.image = QPixmap()
+        self.frame: Any = None
+        self.status = "No MediaPipe record"
+        self.show_478 = True
+        self.show_20 = True
+        self.show_rois = True
+        self.point_size = 10
+
+    def set_frame(self, image_path: Path, frame: Any) -> None:
+        self.image = QPixmap(str(image_path)) if image_path.is_file() else QPixmap()
+        self.frame = frame
+        self.status = "No illustration image" if self.image.isNull() else (
+            "No face" if frame is not None and frame.status == "no_face" else
+            "Ready" if frame is not None else "No MediaPipe record"
+        )
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        del event
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#202124"))
+        if self.image.isNull():
+            painter.setPen(QColor("white"))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.status)
+            painter.end()
+            return
+        target = self.image.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        target_rect = target.toRect()
+        target_rect.moveTo(
+            (self.width() - target_rect.width()) // 2,
+            (self.height() - target_rect.height()) // 2,
+        )
+        painter.drawPixmap(target_rect, self.image)
+        if self.frame is not None and self.frame.status == "ok":
+            def draw(points: np.ndarray, color: str) -> None:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(color))
+                radius = max(2, self.point_size / 2)
+                for x, y, _ in points:
+                    if not np.isfinite((x, y)).all():
+                        continue
+                    px = target_rect.left() + float(np.clip(x, 0, 1)) * target_rect.width()
+                    py = target_rect.top() + float(np.clip(y, 0, 1)) * target_rect.height()
+                    painter.drawEllipse(round(px - radius), round(py - radius), round(2 * radius), round(2 * radius))
+
+            if self.show_478:
+                draw(self.frame.landmarks478, "#44aaff")
+            if self.show_20 and len(self.frame.landmarks20):
+                draw(self.frame.landmarks20, "#ffcc00")
+            if self.show_rois and len(self.frame.roi_centers):
+                draw(self.frame.roi_centers, "#ff5555")
+        painter.setPen(QColor("white"))
+        painter.drawText(8, 20, self.status)
+        painter.end()
+
+
+
+
 class MeshViewer(QMainWindow):
-    def __init__(self, data_root: Path, active_frames_path: Path, results_dir: Path | None, landmarks_root: Path | None) -> None:
+    def __init__(
+        self,
+        data_root: Path,
+        active_frames_path: Path,
+        results_dir: Path | None,
+        landmarks_root: Path | None,
+        mediapipe_root: Path | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("MEVIEW 3D QA Viewer")
         self.data_root = data_root
@@ -369,6 +441,7 @@ class MeshViewer(QMainWindow):
         self.metadata = sequence_metadata(data_root)
         self.predictions, self.metrics, self.prediction_warnings = prediction_metadata(data_root, results_dir)
         self.landmarks_root = landmarks_root
+        self.mediapipe_root = mediapipe_root or data_root / "mediapipe"
         self.sequence: MeshSequence | None = None
         self.raw_video: RawVideo | None = None
         self.landmark_mapping: LandmarkMapping | None = None
@@ -445,7 +518,11 @@ class MeshViewer(QMainWindow):
         self.raw_status.setWordWrap(True)
         raw_layout.addWidget(self.raw_video_widget, 1)
         raw_layout.addWidget(self.raw_status)
-        comparison.addWidget(raw_panel)
+        self.mediapipe_image = LandmarkImageWidget()
+        image_tabs = QTabWidget()
+        image_tabs.addTab(raw_panel, "Raw video")
+        image_tabs.addTab(self.mediapipe_image, "MediaPipe")
+        comparison.addWidget(image_tabs)
         self.plotter = QtInteractor(self)
         self.plotter.set_background("#202124")
         self.plotter.add_axes()
@@ -511,6 +588,21 @@ class MeshViewer(QMainWindow):
         landmark_layout.addRow("Marker size", self.landmark_size)
         landmark_layout.addRow(color)
         layout.addWidget(landmark_group)
+
+        mediapipe_group = QGroupBox("MediaPipe illustration")
+        mediapipe_layout = QFormLayout(mediapipe_group)
+        self.mediapipe_478_toggle = QCheckBox("478 points")
+        self.mediapipe_478_toggle.setChecked(True)
+        self.mediapipe_20_toggle = QCheckBox("Configured 20")
+        self.mediapipe_20_toggle.setChecked(True)
+        self.mediapipe_roi_toggle = QCheckBox("ROI centers")
+        self.mediapipe_roi_toggle.setChecked(True)
+        for control in (self.mediapipe_478_toggle, self.mediapipe_20_toggle, self.mediapipe_roi_toggle):
+            control.toggled.connect(self.refresh_view)
+        mediapipe_layout.addRow(self.mediapipe_478_toggle)
+        mediapipe_layout.addRow(self.mediapipe_20_toggle)
+        mediapipe_layout.addRow(self.mediapipe_roi_toggle)
+        layout.addWidget(mediapipe_group)
         layout.addStretch()
         return panel
 
@@ -673,6 +765,30 @@ class MeshViewer(QMainWindow):
             self.landmark_choice.addItem("All landmarks")
             self.landmark_choice.addItems(sorted(self.landmark_mapping.landmarks))
 
+    def _update_mediapipe(self) -> None:
+        if self.sequence is None:
+            return
+        frame = self.sequence.current_frame
+        image_path = self.sequence.index.frames[frame].get("jpg", Path())
+        record_path = mediapipe_frame_path(self.mediapipe_root, self.sequence.index, frame)
+        record: MediaPipeFrame | None = None
+        error: str | None = None
+        try:
+            record = load_mediapipe_frame(record_path)
+        except FileNotFoundError:
+            pass
+        except ValueError as exc:
+            error = str(exc)
+        self.mediapipe_image.show_478 = self.mediapipe_478_toggle.isChecked()
+        self.mediapipe_image.show_20 = self.mediapipe_20_toggle.isChecked()
+        self.mediapipe_image.show_rois = self.mediapipe_roi_toggle.isChecked()
+        self.mediapipe_image.point_size = self.landmark_size.value()
+        self.mediapipe_image.set_frame(image_path, record)
+        if error:
+            self.mediapipe_image.status = error
+            self.mediapipe_image.update()
+
+
     def set_reference_to_current(self) -> None:
         if self.sequence is None:
             return
@@ -756,6 +872,7 @@ class MeshViewer(QMainWindow):
             self._wire_visible = wire_visible
         self._update_pooling(mesh)
         self._update_landmarks(mesh)
+        self._update_mediapipe()
         if self.axes_toggle.isChecked():
             self.plotter.show_axes()
         else:
@@ -931,12 +1048,19 @@ def main() -> int:
     parser.add_argument("--active-frames", type=Path, required=True)
     parser.add_argument("--results-dir", type=Path)
     parser.add_argument("--landmarks-root", type=Path)
+    parser.add_argument("--mediapipe-root", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test(args.data_root, args.active_frames)
     app = QApplication(sys.argv)
-    window = MeshViewer(args.data_root, args.active_frames, args.results_dir, args.landmarks_root)
+    window = MeshViewer(
+        args.data_root,
+        args.active_frames,
+        args.results_dir,
+        args.landmarks_root,
+        args.mediapipe_root,
+    )
     window.resize(1600, 950)
     window.show()
     return app.exec()

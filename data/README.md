@@ -71,6 +71,25 @@ infer active ranges from filenames.
 - `landmarks/v2.json` and `landmarks/v3.json` can be passed with
   `--landmarks-root` after a validated vertex mapping exists.
 
+## Offline MediaPipe records
+
+The optional landmarks extra can create normalized image-space records without
+running detection during playback:
+
+```bash
+uv run --extra landmarks python extract_mediapipe.py \
+  --data-root /path/to/data/dataset \
+  --output-root /path/to/data/dataset/mediapipe \
+  --model /path/to/face_landmarker.task \
+  --variant v3 \
+  --config /path/to/lfann_landmarks20.json
+```
+
+Records live under `mediapipe/<variant>/<subject>/<video>/<frame>.npz` and
+contain `landmarks478`, optional configured `landmarks20`, `roi_centers`,
+`roi_names`, and `status`. MediaPipe coordinates remain 2D illustration
+coordinates; they are not mesh vertex indices.
+
 All optional inputs can be omitted. Mesh audit and mesh-only playback remain
 available when results, raw video, or landmark mappings are not present. Raw
 video playback requires the matching MP4 and `ffprobe`.

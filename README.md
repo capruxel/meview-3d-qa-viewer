@@ -2,12 +2,11 @@
 
 Standalone dataset audit and PySide6/PyVista viewer for MEVIEW V2/V3 dense-mesh sequences.
 
-The viewer does not run 3DDFA reconstruction and does not regenerate
-`kinematic_features_v2.npy` or `kinematic_features_v3.npy`. `*_frontal_vertices.npy`
+The viewer does not run 3DDFA reconstruction. `*_frontal_vertices.npy`
 files provide mesh coordinates, OBJ files provide topology and required per-vertex
-color, and illustration JPG files are checked for asset completeness but are not
-displayed or used in kinematics. The `active_frames.json` is external metadata
-supplied by the caller; its onset and offset values are inclusive.
+color, and illustration JPG files are displayed in the MediaPipe tab. The
+`active_frames.json` is external metadata supplied by the caller; its onset
+and offset values are inclusive.
 
 Diagnostic displacement, velocity, acceleration, and pooling layers are QA views,
 not the Notebook's 3456-dimensional feature vector.

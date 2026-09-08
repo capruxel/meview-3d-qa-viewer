@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "MEVIEW dense-mesh dataset audit and 3D QA viewer"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "numpy>=2.5.3",
+    "numpy>=1.26,<2",
     "pyvista>=0.48.4",
     "pyvistaqt>=0.13.0",
     "pyside6>=6.11.2",
     "torch>=2.14.0",
 ]
+[project.optional-dependencies]
+landmarks = ["mediapipe==0.10.21"]
