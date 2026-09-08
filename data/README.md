@@ -79,7 +79,7 @@ running detection during playback:
 ```bash
 uv run --extra landmarks python extract_mediapipe.py \
   --data-root /path/to/data/dataset \
-  --output-root /path/to/data/dataset/mediapipe \
+  --output-root /path/to/data/dataset \
   --model /path/to/face_landmarker.task \
   --variant v3 \
   --config /path/to/lfann_landmarks20.json

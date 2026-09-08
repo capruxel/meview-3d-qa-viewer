@@ -77,7 +77,7 @@ def main() -> int:
     with vision.FaceLandmarker.create_from_options(options) as landmarker:
         for sequence in indices:
             for frame in sequence.frame_numbers:
-                image_path = sequence.frames[frame].get("jpg")
+                output_path = args.output_root / "mediapipe" / sequence.variant / sequence.subject / sequence.video / f"{frame:03d}.npz"
                 if image_path is None or not image_path.is_file():
                     raise FileNotFoundError(f"Missing illustration for {sequence.key} frame {frame}: {image_path}")
                 output_path = args.output_root / sequence.variant / sequence.subject / sequence.video / f"{frame:03d}.npz"
