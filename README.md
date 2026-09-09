@@ -1,12 +1,14 @@
 # MEVIEW 3D QA Viewer
 
-Standalone dataset audit and PySide6/PyVista viewer for MEVIEW V2/V3 dense-mesh sequences.
+Standalone dataset audit and PySide6/PyVista viewer for MEVIEW V2/V3 and
+LFANN V3 dense-mesh sequences.
 
 The viewer does not run 3DDFA reconstruction. `*_frontal_vertices.npy`
 files provide mesh coordinates, OBJ files provide topology and required per-vertex
 color, and illustration JPG files are displayed in the MediaPipe tab. The
 `active_frames.json` is external metadata supplied by the caller; its onset
-and offset values are inclusive.
+and offset values are inclusive. The teacher's `frontal_meshes_MEVIEW_v3` and
+LFANN's `frontal_meshes_LFANN_v3` are separate dataset variants.
 
 Diagnostic displacement, velocity, acceleration, and pooling layers are QA views,
 not the Notebook's 3456-dimensional feature vector.
