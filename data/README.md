@@ -16,6 +16,8 @@ data-root/
 │           └── ...
 ├── frontal_meshes_MEVIEW_v3/
 │   └── sub01/01/...
+├── frontal_meshes_LFANN_v3/
+│   └── sub01/01/...
 ├── groups_v2.npy                 # optional sequence metadata
 ├── video_ids_v2.npy              # optional sequence metadata
 ├── labels_v2.npy                 # optional sequence metadata
@@ -62,14 +64,15 @@ infer active ranges from filenames.
 ## Optional inputs
 
 - `groups_v2.npy`, `video_ids_v2.npy`, and `labels_v2.npy` (and the V3 equivalents)
-  provide sequence labels in the inspector.
+  provide sequence labels in the teacher dataset; LFANN output is a selected
+  subset and does not require aggregate label arrays.
 - `raw/me-cuts/cuts/<subject>-<integer-video>.mp4` enables mesh-locked raw-video
   playback. The video directory `01` maps to a file such as `sub01-1.mp4`.
   The system `ffprobe` executable must be available on `PATH`.
 - `results/metrics.csv` and `results/predictions.csv` can be passed with
   `--results-dir`.
-- `landmarks/v2.json` and `landmarks/v3.json` can be passed with
-  `--landmarks-root` after a validated vertex mapping exists.
+- `landmarks/v2.json`, `landmarks/v3.json`, and `landmarks/lfann-v3.json` can
+  be passed with `--landmarks-root` after a validated vertex mapping exists.
 
 ## Offline MediaPipe records
 

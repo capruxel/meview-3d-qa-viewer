@@ -753,7 +753,7 @@ class MeshViewer(QMainWindow):
             self.landmark_status.setText(str(exc))
         if self.landmark_mapping is None:
             if mapping_path is None or not mapping_path.is_file():
-                self.landmark_status.setText("No landmark mapping found for V2/V3")
+                self.landmark_status.setText(f"No landmark mapping found for {sequence.index.variant}")
             for control in (self.landmark_toggle, self.landmark_labels_toggle, self.landmark_choice, self.landmark_size):
                 control.setEnabled(False)
             return

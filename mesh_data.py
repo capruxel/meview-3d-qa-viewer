@@ -11,7 +11,11 @@ from typing import Any
 
 import numpy as np
 
-VARIANTS = {"v2": "frontal_meshes_MEVIEW_v2", "v3": "frontal_meshes_MEVIEW_v3"}
+VARIANTS = {
+    "v2": "frontal_meshes_MEVIEW_v2",
+    "v3": "frontal_meshes_MEVIEW_v3",
+    "lfann-v3": "frontal_meshes_LFANN_v3",
+}
 ASSET_RE = re.compile(r"^(?P<frame>\d+)_frontal_(?P<kind>vertices|mesh|illustration)\.(?P<suffix>npy|obj|jpg)$")
 
 

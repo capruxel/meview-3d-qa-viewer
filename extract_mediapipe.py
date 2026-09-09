@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--variant", choices=("v2", "v3"))
+    parser.add_argument("--variant", choices=("v2", "v3", "lfann-v3"))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -77,7 +77,7 @@ def main() -> int:
     with vision.FaceLandmarker.create_from_options(options) as landmarker:
         for sequence in indices:
             for frame in sequence.frame_numbers:
-                output_path = args.output_root / "mediapipe" / sequence.variant / sequence.subject / sequence.video / f"{frame:03d}.npz"
+                image_path = sequence.frames[frame].get("jpg")
                 if image_path is None or not image_path.is_file():
                     raise FileNotFoundError(f"Missing illustration for {sequence.key} frame {frame}: {image_path}")
                 output_path = args.output_root / sequence.variant / sequence.subject / sequence.video / f"{frame:03d}.npz"
