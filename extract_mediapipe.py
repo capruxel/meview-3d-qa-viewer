@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from mesh_data import scan_sequences
+from viewer_config import add_config_argument, apply_config_defaults
 
 
 def load_config(path: Path | None) -> tuple[list[int], list[str], dict[str, list[int]]]:
@@ -39,13 +40,18 @@ def load_config(path: Path | None) -> tuple[list[int], list[str], dict[str, list
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", type=Path, required=True)
-    parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--model", type=Path, required=True)
+    add_config_argument(parser)
+    parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--model", type=Path)
     parser.add_argument("--variant", choices=("v2", "v3", "lfann-v3"))
     parser.add_argument("--config", type=Path)
     parser.add_argument("--overwrite", action="store_true")
-    return parser.parse_args()
+    apply_config_defaults(parser, "viewer_extract")
+    args = parser.parse_args()
+    if args.data_root is None or args.output_root is None or args.model is None:
+        parser.error("--data-root, --output-root, and --model are required directly or in -C config.toml")
+    return args
 
 
 def main() -> int:

@@ -88,6 +88,9 @@ uv run --extra landmarks python extract_mediapipe.py \
   --config /path/to/lfann_landmarks20.json
 ```
 
+When used as the LFANN submodule, the host repository provides equivalent
+defaults in `../../config/lfann.toml`; pass it with `-C` to either viewer tool.
+
 Records live under `mediapipe/<variant>/<subject>/<video>/<frame>.npz` and
 contain `landmarks478`, optional configured `landmarks20`, `roi_centers`,
 `roi_names`, and `status`. MediaPipe coordinates remain 2D illustration

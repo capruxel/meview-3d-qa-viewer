@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 
 from mesh_data import FrameCache, SequenceIndex, load_active_frames, scan_sequences
 from mediapipe_data import MediaPipeFrame, load_mediapipe_frame, mediapipe_frame_path
+from viewer_config import add_config_argument, apply_config_defaults
 
 LABELS = {0: "Positive", 1: "Negative", 2: "Surprise"}
 MOTION_CLIM = (0.0, 1.0)  # Fixed QA legend; this is not the 3456-D feature scale.
@@ -1044,13 +1045,17 @@ def self_test(data_root: Path, active_frames_path: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", type=Path, required=True)
-    parser.add_argument("--active-frames", type=Path, required=True)
+    add_config_argument(parser)
+    parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--active-frames", type=Path)
     parser.add_argument("--results-dir", type=Path)
     parser.add_argument("--landmarks-root", type=Path)
     parser.add_argument("--mediapipe-root", type=Path)
     parser.add_argument("--self-test", action="store_true")
+    apply_config_defaults(parser, "viewer")
     args = parser.parse_args()
+    if args.data_root is None or args.active_frames is None:
+        parser.error("--data-root and --active-frames are required directly or in -C config.toml")
     if args.self_test:
         return self_test(args.data_root, args.active_frames)
     app = QApplication(sys.argv)

@@ -48,6 +48,15 @@ uv run python mesh_viewer.py \
   --landmarks-root /path/to/landmarks
 ```
 
+Both tools accept `-C`/`--config-file` with a TOML file containing a
+`[viewer]` or `[viewer_extract]` section. Direct CLI arguments override the
+loaded values:
+
+```bash
+uv run python mesh_viewer.py -C ../../config/lfann.toml
+uv run --extra landmarks python extract_mediapipe.py -C ../../config/lfann.toml
+```
+
 `--results-dir` and `--landmarks-root` are optional. The viewer remains usable
 as mesh-only QA when either source is absent. Mesh-only playback remains
 available without raw videos; mesh-locked raw-video playback requires the
