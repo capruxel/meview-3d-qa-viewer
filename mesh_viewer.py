@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
 from mesh_data import FrameCache, SequenceIndex, load_active_frames, scan_sequences
 from mediapipe_data import MediaPipeFrame, load_mediapipe_frame, mediapipe_frame_path
 from viewer_config import add_config_argument, apply_config_defaults
+from viewer_manifest import load as load_viewer_manifest
 
 LABELS = {0: "Positive", 1: "Negative", 2: "Surprise"}
 MOTION_CLIM = (0.0, 1.0)  # Fixed QA legend; this is not the 3456-D feature scale.
@@ -69,8 +70,10 @@ class RawVideo:
         return round((mesh_frame - 1) * 1000 / self.fps)
 
 
-def probe_raw_video(data_root: Path, index: SequenceIndex) -> RawVideo:
-    path = data_root / "raw" / "me-cuts" / "cuts" / f"{index.subject}-{int(index.video)}.mp4"
+def probe_raw_video(raw_root: Path | None, index: SequenceIndex) -> RawVideo:
+    if raw_root is None:
+        raise ValueError("Raw video root not configured")
+    path = raw_root / "cuts" / f"{index.subject}-{int(index.video)}.mp4"
     if not path.is_file():
         raise ValueError(f"Raw video missing: {path}")
     result = subprocess.run(
@@ -429,6 +432,8 @@ class MeshViewer(QMainWindow):
     def __init__(
         self,
         data_root: Path,
+        mesh_root: Path,
+        raw_root: Path | None,
         active_frames_path: Path,
         results_dir: Path | None,
         landmarks_root: Path | None,
@@ -436,13 +441,13 @@ class MeshViewer(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle("MEVIEW 3D QA Viewer")
-        self.data_root = data_root
+        self.raw_root = raw_root
         self.active_frames = load_active_frames(active_frames_path)
-        self.indices = {sequence.key: sequence for sequence in scan_sequences(data_root)}
+        self.indices = {sequence.key: sequence for sequence in scan_sequences(mesh_root, {"lfann-v3": mesh_root})}
         self.metadata = sequence_metadata(data_root)
         self.predictions, self.metrics, self.prediction_warnings = prediction_metadata(data_root, results_dir)
         self.landmarks_root = landmarks_root
-        self.mediapipe_root = mediapipe_root or data_root / "mediapipe"
+        self.mediapipe_root = mediapipe_root
         self.sequence: MeshSequence | None = None
         self.raw_video: RawVideo | None = None
         self.landmark_mapping: LandmarkMapping | None = None
@@ -698,7 +703,7 @@ class MeshViewer(QMainWindow):
         self._mesh_style = None
         self._wire_visible = None
         try:
-            self.raw_video = probe_raw_video(self.data_root, index)
+            self.raw_video = probe_raw_video(self.raw_root, index)
         except ValueError as exc:
             self.raw_video = None
             self.raw_player.stop()
@@ -1033,11 +1038,11 @@ def self_test(data_root: Path, active_frames_path: Path) -> int:
     assert not np.array_equal(first_points, v3.mesh.points)
     v3.set_frame(last)
     assert v3.mesh.n_points == 35709
-    raw_v3 = probe_raw_video(data_root, v3.index)
+    raw_v3 = probe_raw_video(data_root / "raw" / "me-cuts", v3.index)
     assert raw_v3.frame_count == len(v3.frames) == 89 and raw_v3.position_ms(1) == 0
     v2 = MeshSequence.load(find_sequence(data_root, "v2", "sub11", "03"))
     v2.set_frame(v2.frames[-1])
-    raw_v2 = probe_raw_video(data_root, v2.index)
+    raw_v2 = probe_raw_video(data_root / "raw" / "me-cuts", v2.index)
     assert len(v2.frames) == 69 < raw_v2.frame_count == 72
     print("viewer self-test passed: colored meshes and raw-video frame locks validated")
     return 0
@@ -1047,6 +1052,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_config_argument(parser)
     parser.add_argument("--data-root", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--mesh-root", type=Path)
+    parser.add_argument("--raw-root", type=Path)
     parser.add_argument("--active-frames", type=Path)
     parser.add_argument("--results-dir", type=Path)
     parser.add_argument("--landmarks-root", type=Path)
@@ -1054,14 +1062,21 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     apply_config_defaults(parser, "viewer")
     args = parser.parse_args()
-    if args.data_root is None or args.active_frames is None:
-        parser.error("--data-root and --active-frames are required directly or in -C config.toml")
+    if args.data_root is None:
+        parser.error("--data-root is required")
+    manifest = load_viewer_manifest(args.manifest, args.data_root) if args.manifest else {}
+    mesh_root = args.mesh_root or manifest.get("mesh_root") or args.data_root
+    active_frames = args.active_frames or manifest.get("active_frames")
+    if active_frames is None:
+        parser.error("--active-frames or --manifest is required")
     if args.self_test:
-        return self_test(args.data_root, args.active_frames)
+        return self_test(args.data_root, active_frames)
     app = QApplication(sys.argv)
     window = MeshViewer(
         args.data_root,
-        args.active_frames,
+        mesh_root,
+        args.raw_root,
+        active_frames,
         args.results_dir,
         args.landmarks_root,
         args.mediapipe_root,

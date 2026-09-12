@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -72,10 +73,10 @@ def index_sequence(variant: str, subject_dir: Path, video_dir: Path) -> Sequence
     return SequenceIndex(variant, subject_dir.name, video_dir.name, video_dir, frames)
 
 
-def scan_sequences(data_root: Path) -> list[SequenceIndex]:
+def scan_sequences(data_root: Path, roots: Mapping[str, Path] | None = None) -> list[SequenceIndex]:
     sequences: list[SequenceIndex] = []
-    for variant, directory_name in VARIANTS.items():
-        variant_root = data_root / directory_name
+    roots = roots or {variant: data_root / directory_name for variant, directory_name in VARIANTS.items()}
+    for variant, variant_root in roots.items():
         if not variant_root.is_dir():
             continue
         for subject_dir in sorted((path for path in variant_root.iterdir() if path.is_dir()), key=lambda path: path.name):
