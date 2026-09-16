@@ -3,20 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import json
-import subprocess
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pyvista as pv
-import torch
-import torch.nn.functional as F
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtMultimedia import QMediaPlayer
@@ -50,333 +42,18 @@ from PySide6.QtWidgets import (
 )
 from pyvistaqt import QtInteractor
 
-from mediapipe_data import MediaPipeFrame, load_mediapipe_frame, mediapipe_frame_path
-from mesh_data import SequenceIndex, VertexFrames, load_active_frames, scan_sequences
+from mesh_data import SequenceIndex, load_active_frames, scan_sequences
 from viewer_config import add_config_argument, apply_config_defaults
 from viewer_manifest import load as load_viewer_manifest
+from viewer_session import (
+    LandmarkMapping,
+    MeshSequence,
+    RawVideo,
+    ViewerSession,
+    probe_raw_video,
+)
 
-LABELS = {0: "Positive", 1: "Negative", 2: "Surprise"}
 MOTION_CLIM = (0.0, 1.0)  # Fixed QA legend; this is not the 3456-D feature scale.
-
-
-@dataclass(frozen=True)
-class RawVideo:
-    path: Path
-    frame_count: int
-    fps: float
-
-    def position_ms(self, mesh_frame: int) -> int:
-        return round((mesh_frame - 1) * 1000 / self.fps)
-
-
-def probe_raw_video(raw_root: Path | None, index: SequenceIndex) -> RawVideo:
-    if raw_root is None:
-        raise ValueError("Raw video root not configured")
-    path = raw_root / "cuts" / f"{index.subject}-{int(index.video)}.mp4"
-    if not path.is_file():
-        raise ValueError(f"Raw video missing: {path}")
-    result = subprocess.run(
-        (
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-count_frames",
-            "-show_entries",
-            "stream=nb_read_frames,avg_frame_rate",
-            "-of",
-            "json",
-            str(path),
-        ),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode:
-        raise ValueError(f"Cannot inspect raw video {path}: {result.stderr.strip()}")
-    try:
-        stream = json.loads(result.stdout)["streams"][0]
-        numerator, denominator = (int(value) for value in stream["avg_frame_rate"].split("/", 1))
-        frame_count, fps = int(stream["nb_read_frames"]), numerator / denominator
-    except (
-        IndexError,
-        KeyError,
-        ValueError,
-        ZeroDivisionError,
-        json.JSONDecodeError,
-    ) as exc:
-        raise ValueError(f"Invalid raw-video metadata: {path}") from exc
-    if frame_count <= 0 or fps <= 0:
-        raise ValueError(f"Invalid raw-video timing: {path}")
-    return RawVideo(path, frame_count, fps)
-
-
-@lru_cache(maxsize=3)
-def load_vertex_colors(path: Path, vertex_count: int) -> np.ndarray:
-    with path.open(encoding="utf-8", errors="replace") as obj_file:
-        values = np.fromstring(
-            " ".join(line[2:] for line in obj_file if line.startswith("v ")),
-            sep=" ",
-            dtype=float,
-        )
-    if values.size != vertex_count * 6:
-        raise ValueError(f"Expected {vertex_count} colored vertices in {path}")
-    return np.clip(np.rint(values.reshape(vertex_count, 6)[:, 3:] * 255), 0, 255).astype(np.uint8)
-
-
-@dataclass(frozen=True)
-class LandmarkMapping:
-    variant: str
-    vertex_count: int
-    landmarks: dict[str, int]
-
-
-def load_landmarks(root: Path | None, variant: str, vertex_count: int) -> LandmarkMapping | None:
-    if root is None:
-        return None
-    path = root / f"{variant}.json"
-    if not path.is_file():
-        return None
-
-    def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"Duplicate landmark mapping key {key!r}: {path}")
-            result[key] = value
-        return result
-
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid landmark mapping {path}: {exc}") from exc
-    if not isinstance(raw, dict) or set(raw) != {
-        "variant",
-        "vertex_count",
-        "landmarks",
-    }:
-        raise ValueError(f"Invalid landmark mapping schema: {path}")
-    if raw["variant"] != variant or raw["vertex_count"] != vertex_count:
-        raise ValueError(
-            f"Landmark mapping mismatch: {path}: expected {variant}/{vertex_count}, "
-            f"got {raw['variant']!r}/{raw['vertex_count']!r}"
-        )
-    landmarks = raw["landmarks"]
-    if not isinstance(landmarks, dict) or not landmarks:
-        raise ValueError(f"Landmark mapping must contain landmarks: {path}")
-    for name, index in landmarks.items():
-        if (
-            not isinstance(name, str)
-            or not name
-            or not isinstance(index, int)
-            or isinstance(index, bool)
-        ):
-            raise ValueError(f"Invalid landmark entry {name!r}: {index!r}: {path}")
-        if not 0 <= index < vertex_count:
-            raise ValueError(f"Landmark index out of bounds for {name!r}: {index}: {path}")
-    return LandmarkMapping(variant, vertex_count, landmarks)
-
-
-def face_indices_are_valid(mesh: pv.PolyData) -> bool:
-    faces = mesh.faces
-    position = 0
-    while position < len(faces):
-        size = int(faces[position])
-        if size < 3 or position + size >= len(faces):
-            return False
-        indices = faces[position + 1 : position + size + 1]
-        if (
-            len(indices) != size
-            or indices.min(initial=0) < 0
-            or indices.max(initial=-1) >= mesh.n_points
-        ):
-            return False
-        position += size + 1
-    return position == len(faces)
-
-
-class MeshSequence:
-    """One fixed topology plus a bounded cache of NPY vertex coordinates."""
-
-    def __init__(self, index: SequenceIndex, mesh: pv.PolyData, vertex_frames: VertexFrames):
-        self.index = index
-        self.mesh = mesh
-        self._vertex_frames = vertex_frames
-        self.frames = index.frame_numbers
-        self.current_frame = self.frames[0]
-        self.reference_frame = self.frames[0]
-
-    @classmethod
-    def load(cls, index: SequenceIndex) -> MeshSequence:
-        if not index.frame_numbers:
-            raise ValueError(f"No numbered mesh frames: {index.directory}")
-        missing = [
-            f"{frame:03d} ({', '.join(index.missing_assets(frame))})"
-            for frame in index.frame_numbers
-            if index.missing_assets(frame)
-        ]
-        if missing:
-            raise ValueError(f"Missing paired assets in {index.key}: {'; '.join(missing)}")
-        first_frame = index.frame_numbers[0]
-        first_obj = index.asset_path(first_frame, "mesh")
-        assert first_obj is not None
-        try:
-            mesh = pv.read(first_obj)
-        except Exception as exc:  # PyVista exposes VTK reader failures as several exception types.
-            raise ValueError(f"Cannot read OBJ topology {first_obj}: {exc}") from exc
-        if (
-            not isinstance(mesh, pv.PolyData)
-            or mesh.n_points == 0
-            or not face_indices_are_valid(mesh)
-        ):
-            raise ValueError(f"Invalid OBJ topology: {first_obj}")
-        vertex_frames = index.vertex_frames(mesh.n_points)
-        # Validate the first displayable frame before the mesh enters the viewport.
-        vertex_frames.get(first_frame)
-        return cls(index, mesh, vertex_frames)
-
-    def set_frame(self, frame: int) -> np.ndarray:
-        if not self.index.has_frame(frame):
-            raise ValueError(f"Frame {frame} not present in {self.index.key}")
-        points = self._vertex_frames.get(frame)
-        self.mesh.points[:] = points
-        mesh_path = self.index.asset_path(frame, "mesh")
-        assert mesh_path is not None
-        colors = load_vertex_colors(mesh_path, self.mesh.n_points)
-        if "vertex_colors" in self.mesh.point_data:
-            self.mesh.point_data["vertex_colors"][:] = colors
-        else:
-            self.mesh.point_data["vertex_colors"] = colors
-        self.mesh.GetPoints().Modified()
-        self.mesh.GetPointData().GetArray("vertex_colors").Modified()
-        self.mesh.Modified()
-        self.current_frame = frame
-        self._vertex_frames.preload_neighbors(frame)
-        return points
-
-    def set_reference(self, frame: int) -> None:
-        if not self.index.has_frame(frame):
-            raise ValueError(f"Reference frame {frame} not present in {self.index.key}")
-        self._vertex_frames.get(frame)
-        self.reference_frame = frame
-
-    def reference_points(self, indices: Sequence[int]) -> np.ndarray:
-        return self._vertex_frames.get(self.reference_frame)[list(indices)]
-
-    def previous_frames(self) -> tuple[int | None, int | None]:
-        current_index = self.frames.index(self.current_frame)
-        previous = self.frames[current_index - 1] if current_index >= 1 else None
-        previous_previous = self.frames[current_index - 2] if current_index >= 2 else None
-        return previous, previous_previous
-
-    def diagnostics(self) -> dict[str, np.ndarray | None]:
-        current = self._vertex_frames.get(self.current_frame)
-        reference = self._vertex_frames.get(self.reference_frame)
-        previous, previous_previous = self.previous_frames()
-        velocity = (
-            None
-            if previous is None
-            else np.linalg.norm(current - self._vertex_frames.get(previous), axis=1)
-        )
-        acceleration = (
-            None
-            if previous is None or previous_previous is None
-            else np.linalg.norm(
-                current
-                - 2 * self._vertex_frames.get(previous)
-                + self._vertex_frames.get(previous_previous),
-                axis=1,
-            )
-        )
-        return {
-            "displacement": np.linalg.norm(current - reference, axis=1),
-            "velocity": velocity,
-            "acceleration": acceleration,
-        }
-
-    def pooling_bin(self, bin_number: int) -> tuple[np.ndarray, float]:
-        current = self._vertex_frames.get(self.current_frame)
-        reference = self._vertex_frames.get(self.reference_frame)
-        motion = np.ascontiguousarray((current - reference).T * 100.0, dtype=np.float32)
-        pooled = F.adaptive_max_pool1d(torch.from_numpy(motion).unsqueeze(0), 64)[
-            0, :, bin_number
-        ].numpy()
-        start = (bin_number * len(current)) // 64
-        end = ((bin_number + 1) * len(current) + 63) // 64
-        return np.arange(start, min(end, len(current))), float(np.linalg.norm(pooled))
-
-
-def sequence_metadata(data_root: Path) -> dict[str, dict[str, str]]:
-    metadata: dict[str, dict[str, str]] = {}
-    for variant in ("v2", "v3"):
-        try:
-            groups = np.load(data_root / f"groups_{variant}.npy", allow_pickle=False)
-            videos = np.load(data_root / f"video_ids_{variant}.npy", allow_pickle=False)
-            labels = np.load(data_root / f"labels_{variant}.npy", allow_pickle=False)
-        except OSError:
-            continue
-        if not (len(groups) == len(videos) == len(labels)):
-            continue
-        for subject, video, label in zip(groups, videos, labels, strict=True):
-            key = f"{variant}/{subject}/{str(video).zfill(2)}"
-            metadata[key] = {
-                "label": LABELS.get(int(label), str(label)),
-                "subject": str(subject),
-                "video": str(video).zfill(2),
-            }
-    return metadata
-
-
-def prediction_metadata(
-    data_root: Path, results_dir: Path | None
-) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], list[str]]:
-    predictions: dict[str, dict[str, str]] = {}
-    metrics: dict[str, dict[str, str]] = {}
-    warnings: list[str] = []
-    if results_dir is None:
-        return predictions, metrics, warnings
-    metrics_path = results_dir / "metrics.csv"
-    if metrics_path.is_file():
-        with metrics_path.open(newline="", encoding="utf-8") as file:
-            metrics = {row["method"].lower(): row for row in csv.DictReader(file)}
-    predictions_path = results_dir / "predictions.csv"
-    if not predictions_path.is_file():
-        return predictions, metrics, warnings
-    with predictions_path.open(newline="", encoding="utf-8") as file:
-        rows = list(csv.DictReader(file))
-
-    for variant in ("v2", "v3"):
-        try:
-            groups = np.load(data_root / f"groups_{variant}.npy", allow_pickle=False)
-            videos = np.load(data_root / f"video_ids_{variant}.npy", allow_pickle=False)
-            labels = np.load(data_root / f"labels_{variant}.npy", allow_pickle=False)
-        except OSError as exc:
-            warnings.append(f"Prediction mapping unavailable for {variant}: {exc}")
-            continue
-        order = [index for subject in np.unique(groups) for index in np.where(groups == subject)[0]]
-        variant_rows = sorted(
-            (row for row in rows if row.get("method", "").lower() == variant),
-            key=lambda row: int(row["sample_order"]),
-        )
-        if len(variant_rows) != len(order):
-            warnings.append(
-                f"Prediction mapping unavailable for {variant}: expected {len(order)} rows, got {len(variant_rows)}"
-            )
-            continue
-        for row, sample_index in zip(variant_rows, order, strict=True):
-            subject, video, label = (
-                str(groups[sample_index]),
-                str(videos[sample_index]).zfill(2),
-                LABELS.get(int(labels[sample_index]), str(labels[sample_index])),
-            )
-            if row.get("video_id", "").zfill(2) != video or row.get("true_label") != label:
-                warnings.append(
-                    f"Prediction mismatch for {variant}/{subject}/{video}; row {row.get('sample_order')} ignored"
-                )
-                continue
-            predictions[f"{variant}/{subject}/{video}"] = row
-    return predictions, metrics, warnings
 
 
 class ActiveFrameSlider(QSlider):
@@ -511,21 +188,16 @@ class MeshViewer(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle("MEVIEW 3D QA Viewer")
-        self.raw_root = raw_root
-        self.active_frames = load_active_frames(active_frames_path)
-        self.indices = {
-            sequence.key: sequence
-            for sequence in scan_sequences(mesh_root, {"lfann-v3": mesh_root})
-        }
-        self.metadata = sequence_metadata(data_root)
-        self.predictions, self.metrics, self.prediction_warnings = prediction_metadata(
-            data_root, results_dir
+        self.session = ViewerSession(
+            data_root,
+            mesh_root,
+            raw_root,
+            active_frames_path,
+            results_dir,
+            landmarks_root,
+            mediapipe_root,
         )
-        self.landmarks_root = landmarks_root
-        self.mediapipe_root = mediapipe_root
-        self.sequence: MeshSequence | None = None
-        self.raw_video: RawVideo | None = None
-        self.landmark_mapping: LandmarkMapping | None = None
+        self.snapshot = self.session.snapshot
         self.landmark_color = QColor("#ffcc00")
         self.motion_layer: str | None = None
         self._advancing = False
@@ -536,6 +208,18 @@ class MeshViewer(QMainWindow):
         self.raw_player = QMediaPlayer(self)
         self._build_ui()
         self._populate_sequences()
+
+    @property
+    def sequence(self) -> MeshSequence | None:
+        return self.snapshot.sequence
+
+    @property
+    def raw_video(self) -> RawVideo | None:
+        return self.snapshot.raw_video
+
+    @property
+    def landmark_mapping(self) -> LandmarkMapping | None:
+        return self.snapshot.landmark_mapping
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -784,13 +468,13 @@ class MeshViewer(QMainWindow):
         first_video: QTreeWidgetItem | None = None
         with QSignalBlocker(self.sequence_tree):
             self.sequence_tree.clear()
-            for variant in sorted({sequence.variant for sequence in self.indices.values()}):
+            for variant in sorted({sequence.variant for sequence in self.session.indices.values()}):
                 variant_item = QTreeWidgetItem([variant.upper()])
                 self.sequence_tree.addTopLevelItem(variant_item)
                 for subject in sorted(
                     {
                         sequence.subject
-                        for sequence in self.indices.values()
+                        for sequence in self.session.indices.values()
                         if sequence.variant == variant
                     }
                 ):
@@ -799,12 +483,12 @@ class MeshViewer(QMainWindow):
                     for sequence in sorted(
                         (
                             sequence
-                            for sequence in self.indices.values()
+                            for sequence in self.session.indices.values()
                             if sequence.variant == variant and sequence.subject == subject
                         ),
                         key=lambda sequence: sequence.video,
                     ):
-                        active = self.active_frames.get(f"{sequence.subject}_{sequence.video}")
+                        active = self.session.active_window(sequence)
                         timing = (
                             f" · onset F{active[0]}–offset F{active[1]}"
                             if active
@@ -821,7 +505,7 @@ class MeshViewer(QMainWindow):
     def selected_index(self) -> SequenceIndex | None:
         item = self.sequence_tree.currentItem()
         key = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
-        return self.indices.get(key) if isinstance(key, str) else None
+        return self.session.indices.get(key) if isinstance(key, str) else None
 
     def load_selected_sequence(self) -> None:
         index = self.selected_index()
@@ -829,42 +513,26 @@ class MeshViewer(QMainWindow):
             return
         self.timer.stop()
         self._set_playing(False)
-        try:
-            sequence = MeshSequence.load(index)
-        except ValueError as exc:
-            self.sequence = None
-            self.sequence_status.setText(f"Invalid: {exc}")
-            self.info.setText(str(exc))
+        self.snapshot = self.session.select(index.key)
+        self._mesh_style = None
+        self._wire_visible = None
+        if self.snapshot.sequence is None:
+            error = self.snapshot.sequence_error or "Unknown sequence error"
+            self.sequence_status.setText(f"Invalid: {error}")
+            self.info.setText(error)
             self.timeline.setRange(0, 0)
             self.plotter.clear()
             return
-        self.sequence = sequence
-        self._mesh_style = None
-        self._wire_visible = None
-        try:
-            self.raw_video = probe_raw_video(self.raw_root, index)
-        except ValueError as exc:
-            self.raw_video = None
-            self.raw_player.stop()
-            self.raw_player.setSource(QUrl())
-            self.raw_status.setText(str(exc))
-        else:
-            self.raw_player.stop()
-            self.raw_player.setSource(QUrl.fromLocalFile(str(self.raw_video.path)))
-            synced = min(len(sequence.frames), self.raw_video.frame_count)
-            if self.raw_video.frame_count > len(sequence.frames):
-                note = f"; raw tail F{synced + 1}–{self.raw_video.frame_count} unavailable in mesh"
-            elif self.raw_video.frame_count < len(sequence.frames):
-                note = f"; mesh F{synced + 1}–{len(sequence.frames)} has no raw frame"
-            else:
-                note = ""
-            self.raw_status.setText(
-                f"Locked: mesh F1–{synced} ↔ raw F1–{synced} at {self.raw_video.fps:g} FPS{note}"
-            )
-        active = self.active_frames.get(f"{index.subject}_{index.video}")
-        if active and index.has_frame(active[0]):
-            sequence.set_reference(active[0])
-        self._load_landmarks(sequence)
+        self._apply_snapshot()
+        self.reset_camera()
+
+    def _apply_snapshot(self) -> None:
+        sequence = self.snapshot.sequence
+        index = self.snapshot.index
+        assert sequence is not None and index is not None
+        self._set_raw_video()
+        self._set_landmarks()
+        active = self.snapshot.active_frames
         self.sequence_status.setText(f"Ready: {len(sequence.frames)} frames")
         self.sequence_details.setText(self._metadata_text(index, active))
         self.timeline.setRange(0, len(sequence.frames) - 1)
@@ -887,14 +555,19 @@ class MeshViewer(QMainWindow):
             f"Onset–offset F{active[0]}–F{active[1]}" if active else "Onset–offset —"
         )
         self.reference_label.setText(f"Ref F{sequence.reference_frame}")
-        self.set_frame_by_index(0)
-        self.reset_camera()
+        with QSignalBlocker(self.timeline):
+            self.timeline.setValue(sequence.frames.index(sequence.current_frame))
+        self.frame_label.setText(
+            f"{sequence.frames.index(sequence.current_frame) + 1} / {len(sequence.frames)} "
+            f"(frame {sequence.current_frame})"
+        )
+        self._set_mediapipe()
+        self.refresh_view()
 
     def _metadata_text(self, index: SequenceIndex, active: tuple[int, int] | None) -> str:
-        metadata = self.metadata.get(index.key, {})
         return "\n".join(
             (
-                f"Label: {metadata.get('label', 'unknown')}",
+                f"Label: {self.snapshot.metadata.get('label', 'unknown')}",
                 f"Subject/video: {index.subject}/{index.video}",
                 f"Onset–offset: F{active[0]}–F{active[1]}"
                 if active
@@ -911,24 +584,36 @@ class MeshViewer(QMainWindow):
             viewport_toggle.setChecked(checked)
         self.refresh_view()
 
-    def _load_landmarks(self, sequence: MeshSequence) -> None:
-        mapping_path = (
-            None
-            if self.landmarks_root is None
-            else self.landmarks_root / f"{sequence.index.variant}.json"
+    def _set_raw_video(self) -> None:
+        sequence = self.snapshot.sequence
+        raw_video = self.snapshot.raw_video
+        assert sequence is not None
+        self.raw_player.stop()
+        if raw_video is None:
+            self.raw_player.setSource(QUrl())
+            self.raw_status.setText(self.snapshot.raw_video_error or "No raw video")
+            return
+        self.raw_player.setSource(QUrl.fromLocalFile(str(raw_video.path)))
+        synced = min(len(sequence.frames), raw_video.frame_count)
+        if raw_video.frame_count > len(sequence.frames):
+            note = f"; raw tail F{synced + 1}–{raw_video.frame_count} unavailable in mesh"
+        elif raw_video.frame_count < len(sequence.frames):
+            note = f"; mesh F{synced + 1}–{len(sequence.frames)} has no raw frame"
+        else:
+            note = ""
+        self.raw_status.setText(
+            f"Locked: mesh F1–{synced} ↔ raw F1–{synced} at {raw_video.fps:g} FPS{note}"
         )
-        try:
-            self.landmark_mapping = load_landmarks(
-                self.landmarks_root, sequence.index.variant, sequence.mesh.n_points
+
+    def _set_landmarks(self) -> None:
+        sequence = self.snapshot.sequence
+        mapping = self.snapshot.landmark_mapping
+        assert sequence is not None
+        if mapping is None:
+            self.landmark_status.setText(
+                self.snapshot.landmark_error
+                or f"No landmark mapping found for {sequence.index.variant}"
             )
-        except ValueError as exc:
-            self.landmark_mapping = None
-            self.landmark_status.setText(str(exc))
-        if self.landmark_mapping is None:
-            if mapping_path is None or not mapping_path.is_file():
-                self.landmark_status.setText(
-                    f"No landmark mapping found for {sequence.index.variant}"
-                )
             for control in (
                 self.landmark_toggle,
                 self.landmark_labels_toggle,
@@ -944,45 +629,30 @@ class MeshViewer(QMainWindow):
             self.landmark_size,
         ):
             control.setEnabled(True)
-        self.landmark_status.setText(f"{len(self.landmark_mapping.landmarks)} mapped landmarks")
+        self.landmark_status.setText(f"{len(mapping.landmarks)} mapped landmarks")
         with QSignalBlocker(self.landmark_choice):
             self.landmark_choice.clear()
             self.landmark_choice.addItem("All landmarks")
-            self.landmark_choice.addItems(sorted(self.landmark_mapping.landmarks))
+            self.landmark_choice.addItems(sorted(mapping.landmarks))
 
-    def _update_mediapipe(self) -> None:
-        if self.sequence is None:
-            return
-        frame = self.sequence.current_frame
-        image_path = self.sequence.index.asset_path(frame, "illustration")
-        if image_path is None:
-            return
-        if self.mediapipe_root is None:
-            self.mediapipe_image.set_frame(image_path, None)
-            return
-        record_path = mediapipe_frame_path(self.mediapipe_root, self.sequence.index, frame)
-        record: MediaPipeFrame | None = None
-        error: str | None = None
-        try:
-            record = load_mediapipe_frame(record_path)
-        except FileNotFoundError:
-            pass
-        except ValueError as exc:
-            error = str(exc)
+    def _set_mediapipe(self) -> None:
         self.mediapipe_image.show_478 = self.mediapipe_478_toggle.isChecked()
         self.mediapipe_image.show_20 = self.mediapipe_20_toggle.isChecked()
         self.mediapipe_image.show_rois = self.mediapipe_roi_toggle.isChecked()
         self.mediapipe_image.point_size = self.landmark_size.value()
-        self.mediapipe_image.set_frame(image_path, record)
-        if error:
-            self.mediapipe_image.status = error
+        self.mediapipe_image.set_frame(
+            self.snapshot.mediapipe_image, self.snapshot.mediapipe_record
+        )
+        if self.snapshot.mediapipe_error:
+            self.mediapipe_image.status = self.snapshot.mediapipe_error
             self.mediapipe_image.update()
 
     def set_reference_to_current(self) -> None:
-        if self.sequence is None:
+        sequence = self.snapshot.sequence
+        if sequence is None:
             return
-        self.sequence.set_reference(self.sequence.current_frame)
-        self.reference_label.setText(f"Ref F{self.sequence.reference_frame}")
+        self.snapshot = self.session.set_reference(sequence.current_frame)
+        self.reference_label.setText(f"Ref F{sequence.reference_frame}")
         self.timeline.set_markers(
             self.timeline.active_start, self.timeline.active_end, self.timeline.value()
         )
@@ -1004,31 +674,33 @@ class MeshViewer(QMainWindow):
         self.refresh_view()
 
     def set_frame_by_index(self, frame_index: int) -> None:
-        if self.sequence is None:
+        sequence = self.snapshot.sequence
+        if sequence is None:
             return
         try:
-            self.sequence.set_frame(self.sequence.frames[frame_index])
+            self.snapshot = self.session.set_frame(sequence.frames[frame_index])
         except ValueError as exc:
             self.sequence_status.setText(f"Invalid: {exc}")
             self.timer.stop()
             self._set_playing(False)
             return
+        sequence = self.snapshot.sequence
+        assert sequence is not None
         if not self._advancing:
             self._seek_raw_frame(resume=self.timer.isActive())
         self.frame_label.setText(
-            f"{frame_index + 1} / {len(self.sequence.frames)} (frame {self.sequence.current_frame})"
+            f"{frame_index + 1} / {len(sequence.frames)} (frame {sequence.current_frame})"
         )
+        self._set_mediapipe()
         self.refresh_view()
 
     def _seek_raw_frame(self, *, resume: bool = False) -> None:
-        if (
-            self.sequence is None
-            or self.raw_video is None
-            or self.sequence.current_frame > self.raw_video.frame_count
-        ):
+        sequence = self.snapshot.sequence
+        raw_video = self.snapshot.raw_video
+        if sequence is None or raw_video is None or sequence.current_frame > raw_video.frame_count:
             return
         self.raw_player.pause()
-        self.raw_player.setPosition(self.raw_video.position_ms(self.sequence.current_frame))
+        self.raw_player.setPosition(raw_video.position_ms(sequence.current_frame))
         if resume:
             self.raw_player.setPlaybackRate(self._raw_playback_rate())
             self.raw_player.play()
@@ -1087,7 +759,7 @@ class MeshViewer(QMainWindow):
             self._wire_visible = wire_visible
         self._update_pooling(mesh)
         self._update_landmarks(mesh)
-        self._update_mediapipe()
+        self._set_mediapipe()
         if self.axes_toggle.isChecked():
             self.plotter.show_axes()
         else:
@@ -1158,12 +830,11 @@ class MeshViewer(QMainWindow):
     def _update_inspector(
         self, diagnostics: dict[str, np.ndarray | None], scalars: np.ndarray | None
     ) -> None:
-        assert self.sequence is not None
-        points = self.sequence.mesh.points
-        active = self.active_frames.get(
-            f"{self.sequence.index.subject}_{self.sequence.index.video}"
-        )
-        prediction = self.predictions.get(self.sequence.index.key)
+        sequence = self.snapshot.sequence
+        assert sequence is not None
+        points = sequence.mesh.points
+        active = self.snapshot.active_frames
+        prediction = self.snapshot.prediction
         motion = []
         for name, values in diagnostics.items():
             motion.append(
@@ -1178,17 +849,21 @@ class MeshViewer(QMainWindow):
         result = (
             "Prediction mapping unavailable"
             if prediction is None
-            else f"Prediction: {prediction['true_label']} → {prediction['predicted_label']} ({'correct' if prediction['correct'] == 'True' else 'wrong'})"
+            else f"Prediction: {prediction['true_label']} → {prediction['predicted_label']} "
+            f"({'correct' if prediction['correct'] == 'True' else 'wrong'})"
         )
-        warning = "\n".join(self.prediction_warnings)
-        metric = self.metrics.get(self.sequence.index.variant, {})
-        metric_text = f"Metrics: accuracy={metric.get('accuracy', 'n/a')}, UAR={metric.get('uar', 'n/a')}, UF1={metric.get('uf1', 'n/a')}"
+        warning = "\n".join(self.snapshot.prediction_warnings)
+        metric = self.snapshot.metrics
+        metric_text = (
+            f"Metrics: accuracy={metric.get('accuracy', 'n/a')}, "
+            f"UAR={metric.get('uar', 'n/a')}, UF1={metric.get('uf1', 'n/a')}"
+        )
         self.info.setText(
             "\n".join(
                 (
-                    f"Frame: {self.sequence.current_frame}; reference: {self.sequence.reference_frame}",
-                    f"File: {self.sequence.index.asset_path(self.sequence.current_frame, 'vertices')}",
-                    f"Vertices/faces: {self.sequence.mesh.n_points}/{self.sequence.mesh.n_cells}",
+                    f"Frame: {sequence.current_frame}; reference: {sequence.reference_frame}",
+                    f"File: {sequence.index.asset_path(sequence.current_frame, 'vertices')}",
+                    f"Vertices/faces: {sequence.mesh.n_points}/{sequence.mesh.n_cells}",
                     f"Bounds: min={points.min(axis=0).round(5).tolist()} max={points.max(axis=0).round(5).tolist()}",
                     f"Active window: {active[0]}–{active[1]}"
                     if active
