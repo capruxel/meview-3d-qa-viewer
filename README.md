@@ -52,6 +52,12 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
+Run the test suite with pytest:
+
+```bash
+uv run pytest
+```
+
 This repository uses `prek` for Git hooks. It is included in the development
 dependencies, so `uv sync` installs it with Ruff:
 

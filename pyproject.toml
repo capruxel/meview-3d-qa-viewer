@@ -31,5 +31,8 @@ select = ["E4", "E7", "E9", "F", "I", "UP"]
 [dependency-groups]
 dev = [
     "prek>=0.5.2,<0.6",
-    "ruff>=0.15.15,<0.16",
+    "pytest>=9,<10",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
