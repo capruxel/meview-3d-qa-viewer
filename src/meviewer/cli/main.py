@@ -28,10 +28,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         module_name = _COMMANDS[command][1]
     except KeyError:
-        print(
-            f"meviewer: invalid choice: {command!r} (choose from audit, extract, viewer)",
-            file=sys.stderr,
-        )
+        choices = ", ".join(sorted(_COMMANDS))
+        print(f"meviewer: invalid choice: {command!r} (choose from {choices})", file=sys.stderr)
         return 2
     module = __import__(module_name, fromlist=["main"])
     original_argv = sys.argv

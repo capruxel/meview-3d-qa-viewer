@@ -39,8 +39,8 @@ meviewer viewer --data-root /path/to/data/dataset \
   --active-frames /path/to/data/active_frames.json
 ```
 
-The root scripts remain transitional compatibility launchers. See
-`docs/breakingchange-unified-entry.md` for the migration and removal plan.
+The root launcher files were removed. Use the installed `meviewer` command;
+see `docs/breakingchange-unified-entry.md` for the migration contract.
 
 ## Development checks
 
@@ -76,50 +76,27 @@ checks before commits. Use `uv run ruff format .` to apply formatting changes.
 uv run prek validate-config
 ```
 
+
 ```bash
-uv sync
-uv run python audit_dataset.py \
-  --data-root /path/to/data/dataset \
+meviewer audit --data-root /path/to/data/dataset \
   --active-frames /path/to/data/active_frames.json \
   --output /tmp/meview-dataset-audit.json
+meviewer viewer --data-root /path/to/data/dataset \
+  --active-frames /path/to/data/active_frames.json
+uv run --extra landmarks meviewer extract -C ../../config/lfann.toml
 ```
 
-`audit_dataset.py` exits with `0` when the dataset is valid, `1` when validation
+`meviewer audit` exits with `0` when the dataset is valid, `1` when validation
 fails, and `2` for invalid input or configuration. It writes a JSON report with
-`summary`, `baseline_errors`, and `sequences` fields. The reference MEVIEW
-baseline is 2,009 V2 frames with 38,365 vertices and 2,012 V3 frames with
-35,709 vertices.
-
-```bash
-uv run python mesh_viewer.py \
-  --data-root /path/to/data/dataset \
-  --active-frames /path/to/data/active_frames.json \
-  --results-dir /path/to/results \
-  --landmarks-root /path/to/landmarks
-```
-
-Both tools accept `-C`/`--config-file` with a TOML file containing a
-`[viewer]` or `[viewer_extract]` section. Direct CLI arguments override the
-loaded values:
-
-```bash
-uv run python mesh_viewer.py -C ../../config/lfann.toml
-uv run --extra landmarks python extract_mediapipe.py -C ../../config/lfann.toml
-```
+`summary`, `baseline_errors`, and `sequences` fields. Both `meviewer viewer`
+and `meviewer extract` accept `-C`/`--config-file`; direct CLI arguments override
+loaded values.
 
 `--results-dir` and `--landmarks-root` are optional. The viewer remains usable
 as mesh-only QA when either source is absent. Mesh-only playback remains
 available without raw videos; mesh-locked raw-video playback requires the
 matching MP4 and `ffprobe` on `PATH`. Use `--self-test` only for the reference
-MEVIEW dataset regression check; it expects `v3/sub01/01`, `v2/sub11/03`,
-their raw videos, and the expected frame and vertex counts:
-
-```bash
-uv run python mesh_viewer.py \
-  --data-root /path/to/data/dataset \
-  --active-frames /path/to/data/active_frames.json \
-  --self-test
-```
+MEVIEW dataset regression check.
 
 The dataset must contain the MEVIEW V2/V3 mesh assets expected by the audit
 tool. Dataset files, results, raw videos, and release archives are intentionally

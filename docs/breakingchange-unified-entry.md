@@ -10,39 +10,40 @@ meviewer extract ...
 meviewer viewer ...
 ```
 
-The package entry point should dispatch lazily to the existing command implementations. Lazy dispatch is required because `audit` and `extract` must remain usable without importing Qt, PyVista, or optional MediaPipe runtime code.
-
-The current root scripts remain only as a transition aid during the breaking-change window. They are not part of the new interface.
+The package entry point dispatches lazily to the command implementations. Lazy
+dispatch is required because `audit` and `extract` must remain usable without
+importing Qt, PyVista, or optional MediaPipe runtime code. No root launcher
+files are retained.
 
 ## Why unify
 
-The current interface exposes three filenames as separate commands:
+The former interface exposed three filenames as separate commands:
 
 - `audit_dataset.py`
 - `extract_mediapipe.py`
 - `mesh_viewer.py`
 
-Those files are thin launchers, but they still make command discovery, packaging, and documentation look like three unrelated applications. A single `meviewer` command gives users one discoverable namespace while preserving separate domain modules internally.
+Those files were removed rather than retained as aliases, because aliases keep
+the fragmented command surface discoverable and make accidental use likely.
+The single `meviewer` command gives users one discoverable namespace while
+preserving separate domain modules internally.
 
 This is a CLI consolidation, not a runtime consolidation. The audit, extraction, and viewer seams remain separate because they have different dependencies and failure modes.
 
-## New command mapping
-
-| Current command | New command |
-|---|---|
-| `python audit_dataset.py [options]` | `meviewer audit [options]` |
-| `python extract_mediapipe.py [options]` | `meviewer extract [options]` |
-| `python mesh_viewer.py [options]` | `meviewer viewer [options]` |
-
-Subcommand options remain unchanged after the subcommand name. Exit codes, JSON fields, stdout text, and stderr text remain unchanged within each command.
+Subcommand options remain unchanged after the subcommand name. Exit codes, JSON
+fields, stdout text, and stderr text remain unchanged within each command.
 
 ## Breaking changes
 
-1. The three root script filenames are removed as supported entry points.
-2. Direct execution of `python audit_dataset.py`, `python extract_mediapipe.py`, and `python mesh_viewer.py` is no longer documented or guaranteed.
-3. Shell scripts and CI jobs must replace the old command with the corresponding `meviewer` subcommand.
-4. Any code importing root modules must import package modules instead. In particular, `viewer_session.py` is removed; use `meviewer.viewer.session`.
-5. The new command requires an installed package entry point. Running source files directly from an unpackaged checkout is no longer a supported workflow.
+1. The three root script filenames are removed.
+2. Direct execution of the former root script paths is unsupported because the
+   files no longer exist.
+3. Shell scripts and CI jobs must use the corresponding `meviewer` subcommand.
+4. Any code importing former root modules must import package modules instead.
+   In particular, `viewer_session.py` is removed; use
+   `meviewer.viewer.session`.
+5. The new command requires an installed package entry point. Running source
+   files directly from an unpackaged checkout is not a supported workflow.
 
 ## Non-breaking guarantees
 
@@ -88,14 +89,6 @@ meviewer viewer \
 - Remove the root launchers after downstream migration.
 - Update README, ADRs, tests, and hook commands in the same breaking-change commit.
 
-## Rollout
-
-1. Implement `meviewer` and add command-level tests.
-2. Keep root launchers for one release with deprecation warnings only when they are executed directly.
-3. Update repository scripts and documentation.
-4. Remove the root launchers and publish the breaking release.
-
-Because external coupling is known to be low, the compatibility window may be shortened after repository consumers have migrated.
 
 ## Rejected alternatives
 

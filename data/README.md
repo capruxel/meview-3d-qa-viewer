@@ -80,7 +80,7 @@ The optional landmarks extra can create normalized image-space records without
 running detection during playback:
 
 ```bash
-uv run --extra landmarks python extract_mediapipe.py \
+uv run --extra landmarks meviewer extract \
   --data-root /path/to/data/dataset \
   --output-root /path/to/data/dataset \
   --model /path/to/face_landmarker.task \
