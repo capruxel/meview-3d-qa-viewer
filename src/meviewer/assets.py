@@ -8,7 +8,8 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Literal
 
 import numpy as np
 
@@ -17,7 +18,16 @@ VARIANTS = {
     "v3": "frontal_meshes_MEVIEW_v3",
     "lfann-v3": "frontal_meshes_LFANN_v3",
 }
-ASSET_RE = re.compile(r"^(?P<frame>\d+)_frontal_(?P<kind>vertices|mesh|illustration)\.(?P<suffix>npy|obj|jpg)$")
+ASSET_RE = re.compile(
+    r"^(?P<frame>\d+)_frontal_(?P<kind>vertices|mesh|illustration)\.(?P<suffix>npy|obj|jpg)$"
+)
+
+
+@dataclass(frozen=True)
+class FrameAssets:
+    vertices: Path | None
+    mesh: Path | None
+    illustration: Path | None
 
 
 @dataclass(frozen=True)
@@ -26,15 +36,47 @@ class SequenceIndex:
     subject: str
     video: str
     directory: Path
-    frames: dict[int, dict[str, Path]]
+    _frame_assets: Mapping[int, FrameAssets]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_frame_assets", MappingProxyType(dict(self._frame_assets)))
 
     @property
     def key(self) -> str:
         return f"{self.variant}/{self.subject}/{self.video}"
 
     @property
-    def frame_numbers(self) -> list[int]:
-        return sorted(self.frames)
+    def frame_numbers(self) -> tuple[int, ...]:
+        return tuple(sorted(self._frame_assets))
+
+    def has_frame(self, frame: int) -> bool:
+        return frame in self._frame_assets
+
+    def assets_for(self, frame: int) -> FrameAssets:
+        try:
+            return self._frame_assets[frame]
+        except KeyError as exc:
+            raise ValueError(f"Frame {frame} not present in {self.key}") from exc
+
+    def missing_assets(self, frame: int) -> tuple[str, ...]:
+        assets = self.assets_for(frame)
+        return tuple(
+            asset
+            for asset, path in (
+                ("npy", assets.vertices),
+                ("obj", assets.mesh),
+                ("jpg", assets.illustration),
+            )
+            if path is None
+        )
+
+    def asset_path(
+        self, frame: int, kind: Literal["vertices", "mesh", "illustration"]
+    ) -> Path | None:
+        return getattr(self.assets_for(frame), kind)
+
+    def vertex_frames(self, vertex_count: int) -> VertexFrames:
+        return VertexFrames(self, vertex_count)
 
 
 def load_active_frames(path: Path) -> dict[str, tuple[int, int]]:
@@ -49,38 +91,57 @@ def load_active_frames(path: Path) -> dict[str, tuple[int, int]]:
 
     active_frames: dict[str, tuple[int, int]] = {}
     for key, window in raw.items():
-        if not isinstance(key, str) or not isinstance(window, dict) or set(window) != {"onset", "offset"}:
+        if (
+            not isinstance(key, str)
+            or not isinstance(window, dict)
+            or set(window) != {"onset", "offset"}
+        ):
             raise ValueError(f"Invalid active-frame entry for {key!r}")
         onset, offset = window["onset"], window["offset"]
-        if any(isinstance(value, bool) or not isinstance(value, int) for value in (onset, offset)) or onset > offset:
+        if (
+            any(isinstance(value, bool) or not isinstance(value, int) for value in (onset, offset))
+            or onset > offset
+        ):
             raise ValueError(f"Invalid onset/offset for {key!r}: {window!r}")
         active_frames[key] = (onset, offset)
     return active_frames
 
 
 def index_sequence(variant: str, subject_dir: Path, video_dir: Path) -> SequenceIndex:
-    frames: dict[int, dict[str, Path]] = {}
+    assets_by_frame: dict[int, dict[str, Path]] = {}
     for path in video_dir.iterdir():
         match = ASSET_RE.match(path.name)
         if not match:
             continue
         frame = int(match["frame"])
-        kind = {"vertices": "npy", "mesh": "obj", "illustration": "jpg"}[match["kind"]]
-        assets = frames.setdefault(frame, {})
+        kind = match["kind"]
+        assets = assets_by_frame.setdefault(frame, {})
         if kind in assets:
             raise ValueError(f"Duplicate {kind} asset for frame {frame}: {assets[kind]}, {path}")
         assets[kind] = path
-    return SequenceIndex(variant, subject_dir.name, video_dir.name, video_dir, frames)
+    frame_assets = {
+        frame: FrameAssets(assets.get("vertices"), assets.get("mesh"), assets.get("illustration"))
+        for frame, assets in assets_by_frame.items()
+    }
+    return SequenceIndex(variant, subject_dir.name, video_dir.name, video_dir, frame_assets)
 
 
 def scan_sequences(data_root: Path, roots: Mapping[str, Path] | None = None) -> list[SequenceIndex]:
     sequences: list[SequenceIndex] = []
-    roots = roots or {variant: data_root / directory_name for variant, directory_name in VARIANTS.items()}
+    roots = roots or {
+        variant: data_root / directory_name for variant, directory_name in VARIANTS.items()
+    }
     for variant, variant_root in roots.items():
         if not variant_root.is_dir():
             continue
-        for subject_dir in sorted((path for path in variant_root.iterdir() if path.is_dir()), key=lambda path: path.name):
-            for video_dir in sorted((path for path in subject_dir.iterdir() if path.is_dir()), key=lambda path: path.name):
+        for subject_dir in sorted(
+            (path for path in variant_root.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+        ):
+            for video_dir in sorted(
+                (path for path in subject_dir.iterdir() if path.is_dir()),
+                key=lambda path: path.name,
+            ):
                 sequences.append(index_sequence(variant, subject_dir, video_dir))
     return sequences
 
@@ -88,7 +149,9 @@ def scan_sequences(data_root: Path, roots: Mapping[str, Path] | None = None) -> 
 def load_vertices(path: Path) -> np.ndarray:
     vertices = np.load(path, allow_pickle=False)
     if not isinstance(vertices, np.ndarray) or vertices.ndim != 2 or vertices.shape[0] != 3:
-        raise ValueError(f"Expected numeric (3, N) array: {path}; got {getattr(vertices, 'shape', None)}")
+        raise ValueError(
+            f"Expected numeric (3, N) array: {path}; got {getattr(vertices, 'shape', None)}"
+        )
     if not np.issubdtype(vertices.dtype, np.number):
         raise ValueError(f"Expected numeric (3, N) array: {path}; got {vertices.dtype}")
     if vertices.shape[1] == 0:
@@ -127,7 +190,7 @@ def parse_obj(path: Path) -> tuple[int, int, list[str]]:
     return vertex_count, face_count, errors
 
 
-class FrameCache:
+class VertexFrames:
     """Three-frame LRU cache; only playback neighbors remain resident."""
 
     def __init__(self, sequence: SequenceIndex, vertex_count: int):
@@ -139,7 +202,7 @@ class FrameCache:
         if frame in self._cache:
             self._cache.move_to_end(frame)
             return self._cache[frame]
-        path = self.sequence.frames[frame].get("npy")
+        path = self.sequence.asset_path(frame, "vertices")
         if path is None:
             raise ValueError(f"Missing NPY asset for {self.sequence.key} frame {frame}")
         vertices = load_vertices(path)

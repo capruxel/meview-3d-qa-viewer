@@ -1,0 +1,28 @@
+minimum_prek_version = "0.5.2"
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-merge-conflict" },
+  { id = "end-of-file-fixer" },
+  { id = "trailing-whitespace" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "ruff-check",
+    name = "ruff check",
+    language = "system",
+    entry = "uv run ruff check",
+    files = "\\.py$",
+  },
+  {
+    id = "ruff-format",
+    name = "ruff format --check",
+    language = "system",
+    entry = "uv run ruff format --check",
+    files = "\\.py$",
+  },
+]
