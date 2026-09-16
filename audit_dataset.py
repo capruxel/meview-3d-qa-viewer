@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Audit MEVIEW V2/V3 mesh assets without repairing missing frames."""
 
 from __future__ import annotations

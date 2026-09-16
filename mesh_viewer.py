@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Local PySide6/PyVista QA viewer for MEVIEW dense-mesh sequences."""
 
 from __future__ import annotations

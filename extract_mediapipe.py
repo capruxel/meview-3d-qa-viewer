@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Extract normalized MediaPipe landmarks from viewer illustration frames."""
 
 from __future__ import annotations
