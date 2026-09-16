@@ -16,6 +16,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/meviewer"]
+[project.scripts]
+meviewer = "meviewer.cli.main:main"
+
 [project.optional-dependencies]
 landmarks = ["mediapipe==0.10.21"]
 [tool.ruff]

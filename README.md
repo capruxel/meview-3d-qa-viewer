@@ -26,6 +26,22 @@ This repository runs independently. It has no dependency on a specific host
 repository; provide the dataset and metadata paths explicitly. Run the commands
 from this repository root. Requires Python 3.12.x and `uv`.
 
+The unified CLI is the supported entry point:
+
+```bash
+meviewer audit --data-root /path/to/data/dataset \
+  --active-frames /path/to/data/active_frames.json \
+  --output /tmp/meview-dataset-audit.json
+meviewer extract --data-root /path/to/data/dataset \
+  --output-root /path/to/records \
+  --model /path/to/face_landmarker.task
+meviewer viewer --data-root /path/to/data/dataset \
+  --active-frames /path/to/data/active_frames.json
+```
+
+The root scripts remain transitional compatibility launchers. See
+`docs/breakingchange-unified-entry.md` for the migration and removal plan.
+
 ## Development checks
 
 Ruff is pinned as a development dependency and configured in `pyproject.toml`.
