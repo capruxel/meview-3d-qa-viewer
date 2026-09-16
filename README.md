@@ -36,17 +36,23 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-This repository uses `prek` for Git hooks. Install it separately (for example,
-with `brew install prek`), then install the repository hook:
+This repository uses `prek` for Git hooks. It is included in the development
+dependencies, so `uv sync` installs it with Ruff:
 
 ```bash
-prek install --prepare-hooks
-prek run --all-files
+uv sync
+uv run prek install --prepare-hooks
+uv run prek run --all-files
 ```
 
 The hook runs merge-conflict, whitespace, EOF, Ruff lint, and Ruff format
 checks before commits. Use `uv run ruff format .` to apply formatting changes.
 
+`prek` is also available directly for manual checks:
+
+```bash
+uv run prek validate-config
+```
 
 ```bash
 uv sync
