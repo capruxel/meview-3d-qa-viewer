@@ -437,7 +437,7 @@ wheels = [
 [[package]]
 name = "meview-3d-qa-viewer"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pyside6" },
