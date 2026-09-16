@@ -50,13 +50,11 @@ def audit_sequence(
 
     asset_names = {"npy": "vertices.npy", "obj": "mesh.obj", "jpg": "illustration.jpg"}
     for frame in frame_numbers:
-        assets = sequence.frames[frame]
-        for asset in REQUIRED_ASSETS:
-            if asset not in assets:
-                missing_assets.append(
-                    f"frame {frame:03d}: missing {asset}: "
-                    f"{sequence.directory / f'{frame:03d}_frontal_{asset_names[asset]}'}"
-                )
+        for asset in sequence.missing_assets(frame):
+            missing_assets.append(
+                f"frame {frame:03d}: missing {asset}: "
+                f"{sequence.directory / f'{frame:03d}_frontal_{asset_names[asset]}'}"
+            )
     sequence_key = f"{sequence.subject}_{sequence.video}"
 
     if sequence_key in active_frames:
@@ -64,11 +62,11 @@ def audit_sequence(
         active_frame_missing.extend(
             frame
             for frame in range(onset, offset + 1)
-            if "npy" not in sequence.frames.get(frame, {})
+            if not sequence.has_frame(frame) or sequence.asset_path(frame, "vertices") is None
         )
 
     for frame in frame_numbers:
-        npy_path = sequence.frames[frame].get("npy")
+        npy_path = sequence.asset_path(frame, "vertices")
         if npy_path is None:
             continue
         try:
@@ -94,9 +92,8 @@ def audit_sequence(
             frame_max if coordinate_max is None else np.maximum(coordinate_max, frame_max)
         )
 
-    face_count: int | None = None
     obj_paths = [
-        sequence.frames[frame]["obj"] for frame in frame_numbers if "obj" in sequence.frames[frame]
+        path for frame in frame_numbers if (path := sequence.asset_path(frame, "mesh")) is not None
     ]
     if obj_paths:
         obj_vertex_count, face_count, topology_errors = parse_obj(obj_paths[0])

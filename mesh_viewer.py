@@ -7,6 +7,7 @@ import csv
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -50,7 +51,7 @@ from PySide6.QtWidgets import (
 from pyvistaqt import QtInteractor
 
 from mediapipe_data import MediaPipeFrame, load_mediapipe_frame, mediapipe_frame_path
-from mesh_data import FrameCache, SequenceIndex, load_active_frames, scan_sequences
+from mesh_data import SequenceIndex, VertexFrames, load_active_frames, scan_sequences
 from viewer_config import add_config_argument, apply_config_defaults
 from viewer_manifest import load as load_viewer_manifest
 
@@ -198,27 +199,28 @@ def face_indices_are_valid(mesh: pv.PolyData) -> bool:
 class MeshSequence:
     """One fixed topology plus a bounded cache of NPY vertex coordinates."""
 
-    def __init__(self, index: SequenceIndex, mesh: pv.PolyData, cache: FrameCache):
+    def __init__(self, index: SequenceIndex, mesh: pv.PolyData, vertex_frames: VertexFrames):
         self.index = index
         self.mesh = mesh
-        self.cache = cache
+        self._vertex_frames = vertex_frames
         self.frames = index.frame_numbers
         self.current_frame = self.frames[0]
         self.reference_frame = self.frames[0]
 
     @classmethod
     def load(cls, index: SequenceIndex) -> MeshSequence:
-        if not index.frames:
+        if not index.frame_numbers:
             raise ValueError(f"No numbered mesh frames: {index.directory}")
         missing = [
-            f"{frame:03d} ({', '.join(asset for asset in ('npy', 'obj', 'jpg') if asset not in index.frames[frame])})"
+            f"{frame:03d} ({', '.join(index.missing_assets(frame))})"
             for frame in index.frame_numbers
-            if any(asset not in index.frames[frame] for asset in ("npy", "obj", "jpg"))
+            if index.missing_assets(frame)
         ]
         if missing:
             raise ValueError(f"Missing paired assets in {index.key}: {'; '.join(missing)}")
         first_frame = index.frame_numbers[0]
-        first_obj = index.frames[first_frame]["obj"]
+        first_obj = index.asset_path(first_frame, "mesh")
+        assert first_obj is not None
         try:
             mesh = pv.read(first_obj)
         except Exception as exc:  # PyVista exposes VTK reader failures as several exception types.
@@ -229,17 +231,19 @@ class MeshSequence:
             or not face_indices_are_valid(mesh)
         ):
             raise ValueError(f"Invalid OBJ topology: {first_obj}")
-        cache = FrameCache(index, mesh.n_points)
+        vertex_frames = index.vertex_frames(mesh.n_points)
         # Validate the first displayable frame before the mesh enters the viewport.
-        cache.get(first_frame)
-        return cls(index, mesh, cache)
+        vertex_frames.get(first_frame)
+        return cls(index, mesh, vertex_frames)
 
     def set_frame(self, frame: int) -> np.ndarray:
-        if frame not in self.index.frames:
+        if not self.index.has_frame(frame):
             raise ValueError(f"Frame {frame} not present in {self.index.key}")
-        points = self.cache.get(frame)
+        points = self._vertex_frames.get(frame)
         self.mesh.points[:] = points
-        colors = load_vertex_colors(self.index.frames[frame]["obj"], self.mesh.n_points)
+        mesh_path = self.index.asset_path(frame, "mesh")
+        assert mesh_path is not None
+        colors = load_vertex_colors(mesh_path, self.mesh.n_points)
         if "vertex_colors" in self.mesh.point_data:
             self.mesh.point_data["vertex_colors"][:] = colors
         else:
@@ -248,14 +252,17 @@ class MeshSequence:
         self.mesh.GetPointData().GetArray("vertex_colors").Modified()
         self.mesh.Modified()
         self.current_frame = frame
-        self.cache.preload_neighbors(frame)
+        self._vertex_frames.preload_neighbors(frame)
         return points
 
     def set_reference(self, frame: int) -> None:
-        if frame not in self.index.frames:
+        if not self.index.has_frame(frame):
             raise ValueError(f"Reference frame {frame} not present in {self.index.key}")
-        self.cache.get(frame)
+        self._vertex_frames.get(frame)
         self.reference_frame = frame
+
+    def reference_points(self, indices: Sequence[int]) -> np.ndarray:
+        return self._vertex_frames.get(self.reference_frame)[list(indices)]
 
     def previous_frames(self) -> tuple[int | None, int | None]:
         current_index = self.frames.index(self.current_frame)
@@ -264,17 +271,21 @@ class MeshSequence:
         return previous, previous_previous
 
     def diagnostics(self) -> dict[str, np.ndarray | None]:
-        current = self.cache.get(self.current_frame)
-        reference = self.cache.get(self.reference_frame)
+        current = self._vertex_frames.get(self.current_frame)
+        reference = self._vertex_frames.get(self.reference_frame)
         previous, previous_previous = self.previous_frames()
         velocity = (
-            None if previous is None else np.linalg.norm(current - self.cache.get(previous), axis=1)
+            None
+            if previous is None
+            else np.linalg.norm(current - self._vertex_frames.get(previous), axis=1)
         )
         acceleration = (
             None
             if previous is None or previous_previous is None
             else np.linalg.norm(
-                current - 2 * self.cache.get(previous) + self.cache.get(previous_previous),
+                current
+                - 2 * self._vertex_frames.get(previous)
+                + self._vertex_frames.get(previous_previous),
                 axis=1,
             )
         )
@@ -285,8 +296,8 @@ class MeshSequence:
         }
 
     def pooling_bin(self, bin_number: int) -> tuple[np.ndarray, float]:
-        current = self.cache.get(self.current_frame)
-        reference = self.cache.get(self.reference_frame)
+        current = self._vertex_frames.get(self.current_frame)
+        reference = self._vertex_frames.get(self.reference_frame)
         motion = np.ascontiguousarray((current - reference).T * 100.0, dtype=np.float32)
         pooled = F.adaptive_max_pool1d(torch.from_numpy(motion).unsqueeze(0), 64)[
             0, :, bin_number
@@ -851,7 +862,7 @@ class MeshViewer(QMainWindow):
                 f"Locked: mesh F1–{synced} ↔ raw F1–{synced} at {self.raw_video.fps:g} FPS{note}"
             )
         active = self.active_frames.get(f"{index.subject}_{index.video}")
-        if active and active[0] in index.frames:
+        if active and index.has_frame(active[0]):
             sequence.set_reference(active[0])
         self._load_landmarks(sequence)
         self.sequence_status.setText(f"Ready: {len(sequence.frames)} frames")
@@ -943,7 +954,12 @@ class MeshViewer(QMainWindow):
         if self.sequence is None:
             return
         frame = self.sequence.current_frame
-        image_path = self.sequence.index.frames[frame].get("jpg", Path())
+        image_path = self.sequence.index.asset_path(frame, "illustration")
+        if image_path is None:
+            return
+        if self.mediapipe_root is None:
+            self.mediapipe_image.set_frame(image_path, None)
+            return
         record_path = mediapipe_frame_path(self.mediapipe_root, self.sequence.index, frame)
         record: MediaPipeFrame | None = None
         error: str | None = None
@@ -1110,6 +1126,7 @@ class MeshViewer(QMainWindow):
         )
         names, indices = zip(*items, strict=True)
         points = mesh.points[list(indices)]
+        reference_points = self.sequence.reference_points(indices)
         self.plotter.add_mesh(
             pv.PolyData(points),
             name="landmarks",
@@ -1117,7 +1134,6 @@ class MeshViewer(QMainWindow):
             point_size=self.landmark_size.value(),
             render_points_as_spheres=True,
         )
-        reference_points = self.sequence.cache.get(self.sequence.reference_frame)[list(indices)]
         line_cells = np.concatenate(
             [np.array([2, 2 * number, 2 * number + 1]) for number in range(len(indices))]
         )
@@ -1171,7 +1187,7 @@ class MeshViewer(QMainWindow):
             "\n".join(
                 (
                     f"Frame: {self.sequence.current_frame}; reference: {self.sequence.reference_frame}",
-                    f"File: {self.sequence.index.frames[self.sequence.current_frame]['npy']}",
+                    f"File: {self.sequence.index.asset_path(self.sequence.current_frame, 'vertices')}",
                     f"Vertices/faces: {self.sequence.mesh.n_points}/{self.sequence.mesh.n_cells}",
                     f"Bounds: min={points.min(axis=0).round(5).tolist()} max={points.max(axis=0).round(5).tolist()}",
                     f"Active window: {active[0]}–{active[1]}"

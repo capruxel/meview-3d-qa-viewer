@@ -8,6 +8,8 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import Literal
 
 import numpy as np
 
@@ -22,20 +24,59 @@ ASSET_RE = re.compile(
 
 
 @dataclass(frozen=True)
+class FrameAssets:
+    vertices: Path | None
+    mesh: Path | None
+    illustration: Path | None
+
+
+@dataclass(frozen=True)
 class SequenceIndex:
     variant: str
     subject: str
     video: str
     directory: Path
-    frames: dict[int, dict[str, Path]]
+    _frame_assets: Mapping[int, FrameAssets]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_frame_assets", MappingProxyType(dict(self._frame_assets)))
 
     @property
     def key(self) -> str:
         return f"{self.variant}/{self.subject}/{self.video}"
 
     @property
-    def frame_numbers(self) -> list[int]:
-        return sorted(self.frames)
+    def frame_numbers(self) -> tuple[int, ...]:
+        return tuple(sorted(self._frame_assets))
+
+    def has_frame(self, frame: int) -> bool:
+        return frame in self._frame_assets
+
+    def assets_for(self, frame: int) -> FrameAssets:
+        try:
+            return self._frame_assets[frame]
+        except KeyError as exc:
+            raise ValueError(f"Frame {frame} not present in {self.key}") from exc
+
+    def missing_assets(self, frame: int) -> tuple[str, ...]:
+        assets = self.assets_for(frame)
+        return tuple(
+            asset
+            for asset, path in (
+                ("npy", assets.vertices),
+                ("obj", assets.mesh),
+                ("jpg", assets.illustration),
+            )
+            if path is None
+        )
+
+    def asset_path(
+        self, frame: int, kind: Literal["vertices", "mesh", "illustration"]
+    ) -> Path | None:
+        return getattr(self.assets_for(frame), kind)
+
+    def vertex_frames(self, vertex_count: int) -> VertexFrames:
+        return VertexFrames(self, vertex_count)
 
 
 def load_active_frames(path: Path) -> dict[str, tuple[int, int]]:
@@ -67,18 +108,22 @@ def load_active_frames(path: Path) -> dict[str, tuple[int, int]]:
 
 
 def index_sequence(variant: str, subject_dir: Path, video_dir: Path) -> SequenceIndex:
-    frames: dict[int, dict[str, Path]] = {}
+    assets_by_frame: dict[int, dict[str, Path]] = {}
     for path in video_dir.iterdir():
         match = ASSET_RE.match(path.name)
         if not match:
             continue
         frame = int(match["frame"])
-        kind = {"vertices": "npy", "mesh": "obj", "illustration": "jpg"}[match["kind"]]
-        assets = frames.setdefault(frame, {})
+        kind = match["kind"]
+        assets = assets_by_frame.setdefault(frame, {})
         if kind in assets:
             raise ValueError(f"Duplicate {kind} asset for frame {frame}: {assets[kind]}, {path}")
         assets[kind] = path
-    return SequenceIndex(variant, subject_dir.name, video_dir.name, video_dir, frames)
+    frame_assets = {
+        frame: FrameAssets(assets.get("vertices"), assets.get("mesh"), assets.get("illustration"))
+        for frame, assets in assets_by_frame.items()
+    }
+    return SequenceIndex(variant, subject_dir.name, video_dir.name, video_dir, frame_assets)
 
 
 def scan_sequences(data_root: Path, roots: Mapping[str, Path] | None = None) -> list[SequenceIndex]:
@@ -145,7 +190,7 @@ def parse_obj(path: Path) -> tuple[int, int, list[str]]:
     return vertex_count, face_count, errors
 
 
-class FrameCache:
+class VertexFrames:
     """Three-frame LRU cache; only playback neighbors remain resident."""
 
     def __init__(self, sequence: SequenceIndex, vertex_count: int):
@@ -157,7 +202,7 @@ class FrameCache:
         if frame in self._cache:
             self._cache.move_to_end(frame)
             return self._cache[frame]
-        path = self.sequence.frames[frame].get("npy")
+        path = self.sequence.asset_path(frame, "vertices")
         if path is None:
             raise ValueError(f"Missing NPY asset for {self.sequence.key} frame {frame}")
         vertices = load_vertices(path)
