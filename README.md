@@ -26,6 +26,28 @@ This repository runs independently. It has no dependency on a specific host
 repository; provide the dataset and metadata paths explicitly. Run the commands
 from this repository root. Requires Python 3.12.x and `uv`.
 
+## Development checks
+
+Ruff is pinned as a development dependency and configured in `pyproject.toml`.
+Run the checks manually with:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+```
+
+This repository uses `prek` for Git hooks. Install it separately (for example,
+with `brew install prek`), then install the repository hook:
+
+```bash
+prek install --prepare-hooks
+prek run --all-files
+```
+
+The hook runs merge-conflict, whitespace, EOF, Ruff lint, and Ruff format
+checks before commits. Use `uv run ruff format .` to apply formatting changes.
+
+
 ```bash
 uv sync
 uv run python audit_dataset.py \

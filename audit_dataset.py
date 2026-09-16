@@ -11,7 +11,14 @@ from typing import Any
 
 import numpy as np
 
-from mesh_data import VARIANTS, SequenceIndex, load_active_frames, load_vertices, parse_obj, scan_sequences
+from mesh_data import (
+    VARIANTS,
+    SequenceIndex,
+    load_active_frames,
+    load_vertices,
+    parse_obj,
+    scan_sequences,
+)
 
 EXPECTED = {
     "v2": {"frame_count": 2009, "vertex_count": 38365},
@@ -20,14 +27,20 @@ EXPECTED = {
 REQUIRED_ASSETS = ("npy", "obj", "jpg")
 
 
-def bounds_payload(minimum: np.ndarray | None, maximum: np.ndarray | None) -> dict[str, list[float] | None]:
+def bounds_payload(
+    minimum: np.ndarray | None, maximum: np.ndarray | None
+) -> dict[str, list[float] | None]:
     return {
         "min": minimum.tolist() if minimum is not None else None,
         "max": maximum.tolist() if maximum is not None else None,
     }
 
 
-def audit_sequence(sequence: SequenceIndex, active_frames: dict[str, tuple[int, int]], landmarks_root: Path | None) -> dict[str, Any]:
+def audit_sequence(
+    sequence: SequenceIndex,
+    active_frames: dict[str, tuple[int, int]],
+    landmarks_root: Path | None,
+) -> dict[str, Any]:
     missing_assets: list[str] = []
     errors: list[str] = []
     vertex_count: int | None = None
@@ -49,7 +62,11 @@ def audit_sequence(sequence: SequenceIndex, active_frames: dict[str, tuple[int, 
 
     if sequence_key in active_frames:
         onset, offset = active_frames[sequence_key]
-        active_frame_missing.extend(frame for frame in range(onset, offset + 1) if "npy" not in sequence.frames.get(frame, {}))
+        active_frame_missing.extend(
+            frame
+            for frame in range(onset, offset + 1)
+            if "npy" not in sequence.frames.get(frame, {})
+        )
 
     for frame in frame_numbers:
         npy_path = sequence.frames[frame].get("npy")
@@ -66,19 +83,29 @@ def audit_sequence(sequence: SequenceIndex, active_frames: dict[str, tuple[int, 
         if vertex_count is None:
             vertex_count = len(vertices)
         elif len(vertices) != vertex_count:
-            errors.append(f"Vertex count mismatch: {npy_path}: expected {vertex_count}, got {len(vertices)}")
+            errors.append(
+                f"Vertex count mismatch: {npy_path}: expected {vertex_count}, got {len(vertices)}"
+            )
         frame_min = vertices.min(axis=0)
         frame_max = vertices.max(axis=0)
-        coordinate_min = frame_min if coordinate_min is None else np.minimum(coordinate_min, frame_min)
-        coordinate_max = frame_max if coordinate_max is None else np.maximum(coordinate_max, frame_max)
+        coordinate_min = (
+            frame_min if coordinate_min is None else np.minimum(coordinate_min, frame_min)
+        )
+        coordinate_max = (
+            frame_max if coordinate_max is None else np.maximum(coordinate_max, frame_max)
+        )
 
     face_count: int | None = None
-    obj_paths = [sequence.frames[frame]["obj"] for frame in frame_numbers if "obj" in sequence.frames[frame]]
+    obj_paths = [
+        sequence.frames[frame]["obj"] for frame in frame_numbers if "obj" in sequence.frames[frame]
+    ]
     if obj_paths:
         obj_vertex_count, face_count, topology_errors = parse_obj(obj_paths[0])
         errors.extend(topology_errors)
         if vertex_count is not None and obj_vertex_count != vertex_count:
-            errors.append(f"OBJ/NPY vertex mismatch: {obj_paths[0]}: OBJ={obj_vertex_count}, NPY={vertex_count}")
+            errors.append(
+                f"OBJ/NPY vertex mismatch: {obj_paths[0]}: OBJ={obj_vertex_count}, NPY={vertex_count}"
+            )
     else:
         errors.append(f"No OBJ mesh available: {sequence.directory}")
 
@@ -86,7 +113,9 @@ def audit_sequence(sequence: SequenceIndex, active_frames: dict[str, tuple[int, 
     if landmarks_root is not None:
         landmark_candidates.append(landmarks_root / f"{sequence.variant}.json")
     landmark_candidates.extend(
-        path for path in sequence.directory.iterdir() if any(token in path.name.lower() for token in ("landmark", "keypoint"))
+        path
+        for path in sequence.directory.iterdir()
+        if any(token in path.name.lower() for token in ("landmark", "keypoint"))
     )
     landmark_sidecar = next((str(path) for path in landmark_candidates if path.is_file()), None)
     valid = not missing_assets and not active_frame_missing and not errors
@@ -113,7 +142,9 @@ def summarize(records: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]
     for variant in VARIANTS:
         items = [record for record in records if record["variant"] == variant]
         frame_count = sum(item["frame_count"] for item in items)
-        vertex_counts = sorted({item["vertex_count"] for item in items if item["vertex_count"] is not None})
+        vertex_counts = sorted(
+            {item["vertex_count"] for item in items if item["vertex_count"] is not None}
+        )
         variants[variant] = {
             "sequence_count": len(items),
             "frame_count": frame_count,
@@ -124,10 +155,18 @@ def summarize(records: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]
         }
         expected = EXPECTED[variant]
         if frame_count != expected["frame_count"]:
-            baseline_errors.append(f"{variant} frame count: expected {expected['frame_count']}, got {frame_count}")
+            baseline_errors.append(
+                f"{variant} frame count: expected {expected['frame_count']}, got {frame_count}"
+            )
         if vertex_counts != [expected["vertex_count"]]:
-            baseline_errors.append(f"{variant} vertex counts: expected [{expected['vertex_count']}], got {vertex_counts}")
-    return {"variants": variants, "sequence_count": len(records), "valid": not baseline_errors and all(item["valid"] for item in records)}, baseline_errors
+            baseline_errors.append(
+                f"{variant} vertex counts: expected [{expected['vertex_count']}], got {vertex_counts}"
+            )
+    return {
+        "variants": variants,
+        "sequence_count": len(records),
+        "valid": not baseline_errors and all(item["valid"] for item in records),
+    }, baseline_errors
 
 
 def main() -> int:
@@ -149,7 +188,11 @@ def main() -> int:
         return 2
 
     summary, baseline_errors = summarize(records)
-    payload = {"summary": summary, "baseline_errors": baseline_errors, "sequences": records}
+    payload = {
+        "summary": summary,
+        "baseline_errors": baseline_errors,
+        "sequences": records,
+    }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {args.output}: {summary['sequence_count']} sequences, valid={summary['valid']}")

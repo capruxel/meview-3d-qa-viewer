@@ -8,7 +8,6 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -17,7 +16,9 @@ VARIANTS = {
     "v3": "frontal_meshes_MEVIEW_v3",
     "lfann-v3": "frontal_meshes_LFANN_v3",
 }
-ASSET_RE = re.compile(r"^(?P<frame>\d+)_frontal_(?P<kind>vertices|mesh|illustration)\.(?P<suffix>npy|obj|jpg)$")
+ASSET_RE = re.compile(
+    r"^(?P<frame>\d+)_frontal_(?P<kind>vertices|mesh|illustration)\.(?P<suffix>npy|obj|jpg)$"
+)
 
 
 @dataclass(frozen=True)
@@ -49,10 +50,17 @@ def load_active_frames(path: Path) -> dict[str, tuple[int, int]]:
 
     active_frames: dict[str, tuple[int, int]] = {}
     for key, window in raw.items():
-        if not isinstance(key, str) or not isinstance(window, dict) or set(window) != {"onset", "offset"}:
+        if (
+            not isinstance(key, str)
+            or not isinstance(window, dict)
+            or set(window) != {"onset", "offset"}
+        ):
             raise ValueError(f"Invalid active-frame entry for {key!r}")
         onset, offset = window["onset"], window["offset"]
-        if any(isinstance(value, bool) or not isinstance(value, int) for value in (onset, offset)) or onset > offset:
+        if (
+            any(isinstance(value, bool) or not isinstance(value, int) for value in (onset, offset))
+            or onset > offset
+        ):
             raise ValueError(f"Invalid onset/offset for {key!r}: {window!r}")
         active_frames[key] = (onset, offset)
     return active_frames
@@ -75,12 +83,20 @@ def index_sequence(variant: str, subject_dir: Path, video_dir: Path) -> Sequence
 
 def scan_sequences(data_root: Path, roots: Mapping[str, Path] | None = None) -> list[SequenceIndex]:
     sequences: list[SequenceIndex] = []
-    roots = roots or {variant: data_root / directory_name for variant, directory_name in VARIANTS.items()}
+    roots = roots or {
+        variant: data_root / directory_name for variant, directory_name in VARIANTS.items()
+    }
     for variant, variant_root in roots.items():
         if not variant_root.is_dir():
             continue
-        for subject_dir in sorted((path for path in variant_root.iterdir() if path.is_dir()), key=lambda path: path.name):
-            for video_dir in sorted((path for path in subject_dir.iterdir() if path.is_dir()), key=lambda path: path.name):
+        for subject_dir in sorted(
+            (path for path in variant_root.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+        ):
+            for video_dir in sorted(
+                (path for path in subject_dir.iterdir() if path.is_dir()),
+                key=lambda path: path.name,
+            ):
                 sequences.append(index_sequence(variant, subject_dir, video_dir))
     return sequences
 
@@ -88,7 +104,9 @@ def scan_sequences(data_root: Path, roots: Mapping[str, Path] | None = None) -> 
 def load_vertices(path: Path) -> np.ndarray:
     vertices = np.load(path, allow_pickle=False)
     if not isinstance(vertices, np.ndarray) or vertices.ndim != 2 or vertices.shape[0] != 3:
-        raise ValueError(f"Expected numeric (3, N) array: {path}; got {getattr(vertices, 'shape', None)}")
+        raise ValueError(
+            f"Expected numeric (3, N) array: {path}; got {getattr(vertices, 'shape', None)}"
+        )
     if not np.issubdtype(vertices.dtype, np.number):
         raise ValueError(f"Expected numeric (3, N) array: {path}; got {vertices.dtype}")
     if vertices.shape[1] == 0:

@@ -51,9 +51,13 @@ def load_mediapipe_frame(path: Path) -> MediaPipeFrame:
         raise ValueError(f"Invalid MediaPipe record {path}: {exc}") from exc
 
     if raw_names.ndim != 1 or raw_names.dtype.kind not in "OUSU" or len(raw_names) not in (0, 4):
-        raise ValueError(f"Invalid roi_names shape/dtype in {path}: {raw_names.shape}/{raw_names.dtype}")
+        raise ValueError(
+            f"Invalid roi_names shape/dtype in {path}: {raw_names.shape}/{raw_names.dtype}"
+        )
     if raw_status.shape != () or raw_status.dtype.kind not in "OUSU":
-        raise ValueError(f"Invalid status shape/dtype in {path}: {raw_status.shape}/{raw_status.dtype}")
+        raise ValueError(
+            f"Invalid status shape/dtype in {path}: {raw_status.shape}/{raw_status.dtype}"
+        )
     status = str(raw_status.item())
     if status not in {"ok", "no_face"}:
         raise ValueError(f"Invalid MediaPipe status in {path}: {status!r}")
@@ -65,6 +69,8 @@ def load_mediapipe_frame(path: Path) -> MediaPipeFrame:
     roi_names = tuple(str(name) for name in raw_names.tolist())
     if len(set(roi_names)) != len(roi_names) or any(not name for name in roi_names):
         raise ValueError(f"Invalid roi_names in {path}: {roi_names!r}")
-    if status == "ok" and not all(np.isfinite(points).all() for points in (landmarks478, landmarks20, roi_centers)):
+    if status == "ok" and not all(
+        np.isfinite(points).all() for points in (landmarks478, landmarks20, roi_centers)
+    ):
         raise ValueError(f"Non-finite detected landmarks in {path}")
     return MediaPipeFrame(landmarks478, landmarks20, roi_centers, roi_names, status)

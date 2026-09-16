@@ -17,14 +17,14 @@ import numpy as np
 import pyvista as pv
 import torch
 import torch.nn.functional as F
-from pyvistaqt import QtInteractor
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
-from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -33,31 +33,30 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
-    QColorDialog,
     QLabel,
     QMainWindow,
     QPushButton,
     QSlider,
     QSpinBox,
     QSplitter,
+    QStyle,
+    QStyleOptionSlider,
     QTabWidget,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
-    QStyle,
-    QStyleOptionSlider,
     QWidget,
 )
+from pyvistaqt import QtInteractor
 
-from mesh_data import FrameCache, SequenceIndex, load_active_frames, scan_sequences
 from mediapipe_data import MediaPipeFrame, load_mediapipe_frame, mediapipe_frame_path
+from mesh_data import FrameCache, SequenceIndex, load_active_frames, scan_sequences
 from viewer_config import add_config_argument, apply_config_defaults
 from viewer_manifest import load as load_viewer_manifest
 
 LABELS = {0: "Positive", 1: "Negative", 2: "Surprise"}
 MOTION_CLIM = (0.0, 1.0)  # Fixed QA legend; this is not the 3456-D feature scale.
-
 
 
 @dataclass(frozen=True)
@@ -100,7 +99,13 @@ def probe_raw_video(raw_root: Path | None, index: SequenceIndex) -> RawVideo:
         stream = json.loads(result.stdout)["streams"][0]
         numerator, denominator = (int(value) for value in stream["avg_frame_rate"].split("/", 1))
         frame_count, fps = int(stream["nb_read_frames"]), numerator / denominator
-    except (IndexError, KeyError, ValueError, ZeroDivisionError, json.JSONDecodeError) as exc:
+    except (
+        IndexError,
+        KeyError,
+        ValueError,
+        ZeroDivisionError,
+        json.JSONDecodeError,
+    ) as exc:
         raise ValueError(f"Invalid raw-video metadata: {path}") from exc
     if frame_count <= 0 or fps <= 0:
         raise ValueError(f"Invalid raw-video timing: {path}")
@@ -146,7 +151,11 @@ def load_landmarks(root: Path | None, variant: str, vertex_count: int) -> Landma
         raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid landmark mapping {path}: {exc}") from exc
-    if not isinstance(raw, dict) or set(raw) != {"variant", "vertex_count", "landmarks"}:
+    if not isinstance(raw, dict) or set(raw) != {
+        "variant",
+        "vertex_count",
+        "landmarks",
+    }:
         raise ValueError(f"Invalid landmark mapping schema: {path}")
     if raw["variant"] != variant or raw["vertex_count"] != vertex_count:
         raise ValueError(
@@ -157,7 +166,12 @@ def load_landmarks(root: Path | None, variant: str, vertex_count: int) -> Landma
     if not isinstance(landmarks, dict) or not landmarks:
         raise ValueError(f"Landmark mapping must contain landmarks: {path}")
     for name, index in landmarks.items():
-        if not isinstance(name, str) or not name or not isinstance(index, int) or isinstance(index, bool):
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(index, int)
+            or isinstance(index, bool)
+        ):
             raise ValueError(f"Invalid landmark entry {name!r}: {index!r}: {path}")
         if not 0 <= index < vertex_count:
             raise ValueError(f"Landmark index out of bounds for {name!r}: {index}: {path}")
@@ -172,7 +186,11 @@ def face_indices_are_valid(mesh: pv.PolyData) -> bool:
         if size < 3 or position + size >= len(faces):
             return False
         indices = faces[position + 1 : position + size + 1]
-        if len(indices) != size or indices.min(initial=0) < 0 or indices.max(initial=-1) >= mesh.n_points:
+        if (
+            len(indices) != size
+            or indices.min(initial=0) < 0
+            or indices.max(initial=-1) >= mesh.n_points
+        ):
             return False
         position += size + 1
     return position == len(faces)
@@ -190,7 +208,7 @@ class MeshSequence:
         self.reference_frame = self.frames[0]
 
     @classmethod
-    def load(cls, index: SequenceIndex) -> "MeshSequence":
+    def load(cls, index: SequenceIndex) -> MeshSequence:
         if not index.frames:
             raise ValueError(f"No numbered mesh frames: {index.directory}")
         missing = [
@@ -206,7 +224,11 @@ class MeshSequence:
             mesh = pv.read(first_obj)
         except Exception as exc:  # PyVista exposes VTK reader failures as several exception types.
             raise ValueError(f"Cannot read OBJ topology {first_obj}: {exc}") from exc
-        if not isinstance(mesh, pv.PolyData) or mesh.n_points == 0 or not face_indices_are_valid(mesh):
+        if (
+            not isinstance(mesh, pv.PolyData)
+            or mesh.n_points == 0
+            or not face_indices_are_valid(mesh)
+        ):
             raise ValueError(f"Invalid OBJ topology: {first_obj}")
         cache = FrameCache(index, mesh.n_points)
         # Validate the first displayable frame before the mesh enters the viewport.
@@ -246,11 +268,16 @@ class MeshSequence:
         current = self.cache.get(self.current_frame)
         reference = self.cache.get(self.reference_frame)
         previous, previous_previous = self.previous_frames()
-        velocity = None if previous is None else np.linalg.norm(current - self.cache.get(previous), axis=1)
+        velocity = (
+            None if previous is None else np.linalg.norm(current - self.cache.get(previous), axis=1)
+        )
         acceleration = (
             None
             if previous is None or previous_previous is None
-            else np.linalg.norm(current - 2 * self.cache.get(previous) + self.cache.get(previous_previous), axis=1)
+            else np.linalg.norm(
+                current - 2 * self.cache.get(previous) + self.cache.get(previous_previous),
+                axis=1,
+            )
         )
         return {
             "displacement": np.linalg.norm(current - reference, axis=1),
@@ -262,7 +289,9 @@ class MeshSequence:
         current = self.cache.get(self.current_frame)
         reference = self.cache.get(self.reference_frame)
         motion = np.ascontiguousarray((current - reference).T * 100.0, dtype=np.float32)
-        pooled = F.adaptive_max_pool1d(torch.from_numpy(motion).unsqueeze(0), 64)[0, :, bin_number].numpy()
+        pooled = F.adaptive_max_pool1d(torch.from_numpy(motion).unsqueeze(0), 64)[
+            0, :, bin_number
+        ].numpy()
         start = (bin_number * len(current)) // 64
         end = ((bin_number + 1) * len(current) + 63) // 64
         return np.arange(start, min(end, len(current))), float(np.linalg.norm(pooled))
@@ -281,11 +310,17 @@ def sequence_metadata(data_root: Path) -> dict[str, dict[str, str]]:
             continue
         for subject, video, label in zip(groups, videos, labels, strict=True):
             key = f"{variant}/{subject}/{str(video).zfill(2)}"
-            metadata[key] = {"label": LABELS.get(int(label), str(label)), "subject": str(subject), "video": str(video).zfill(2)}
+            metadata[key] = {
+                "label": LABELS.get(int(label), str(label)),
+                "subject": str(subject),
+                "video": str(video).zfill(2),
+            }
     return metadata
 
 
-def prediction_metadata(data_root: Path, results_dir: Path | None) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], list[str]]:
+def prediction_metadata(
+    data_root: Path, results_dir: Path | None
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], list[str]]:
     predictions: dict[str, dict[str, str]] = {}
     metrics: dict[str, dict[str, str]] = {}
     warnings: list[str] = []
@@ -310,14 +345,25 @@ def prediction_metadata(data_root: Path, results_dir: Path | None) -> tuple[dict
             warnings.append(f"Prediction mapping unavailable for {variant}: {exc}")
             continue
         order = [index for subject in np.unique(groups) for index in np.where(groups == subject)[0]]
-        variant_rows = sorted((row for row in rows if row.get("method", "").lower() == variant), key=lambda row: int(row["sample_order"]))
+        variant_rows = sorted(
+            (row for row in rows if row.get("method", "").lower() == variant),
+            key=lambda row: int(row["sample_order"]),
+        )
         if len(variant_rows) != len(order):
-            warnings.append(f"Prediction mapping unavailable for {variant}: expected {len(order)} rows, got {len(variant_rows)}")
+            warnings.append(
+                f"Prediction mapping unavailable for {variant}: expected {len(order)} rows, got {len(variant_rows)}"
+            )
             continue
         for row, sample_index in zip(variant_rows, order, strict=True):
-            subject, video, label = str(groups[sample_index]), str(videos[sample_index]).zfill(2), LABELS.get(int(labels[sample_index]), str(labels[sample_index]))
+            subject, video, label = (
+                str(groups[sample_index]),
+                str(videos[sample_index]).zfill(2),
+                LABELS.get(int(labels[sample_index]), str(labels[sample_index])),
+            )
             if row.get("video_id", "").zfill(2) != video or row.get("true_label") != label:
-                warnings.append(f"Prediction mismatch for {variant}/{subject}/{video}; row {row.get('sample_order')} ignored")
+                warnings.append(
+                    f"Prediction mismatch for {variant}/{subject}/{video}; row {row.get('sample_order')} ignored"
+                )
                 continue
             predictions[f"{variant}/{subject}/{video}"] = row
     return predictions, metrics, warnings
@@ -341,7 +387,10 @@ class ActiveFrameSlider(QSlider):
         option = QStyleOptionSlider()
         self.initStyleOption(option)
         groove = self.style().subControlRect(
-            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderGroove, self
+            QStyle.ComplexControl.CC_Slider,
+            option,
+            QStyle.SubControl.SC_SliderGroove,
+            self,
         )
         scale = groove.width() / (self.maximum() - self.minimum())
 
@@ -381,9 +430,16 @@ class LandmarkImageWidget(QWidget):
     def set_frame(self, image_path: Path, frame: Any) -> None:
         self.image = QPixmap(str(image_path)) if image_path.is_file() else QPixmap()
         self.frame = frame
-        self.status = "No illustration image" if self.image.isNull() else (
-            "No face" if frame is not None and frame.status == "no_face" else
-            "Ready" if frame is not None else "No MediaPipe record"
+        self.status = (
+            "No illustration image"
+            if self.image.isNull()
+            else (
+                "No face"
+                if frame is not None and frame.status == "no_face"
+                else "Ready"
+                if frame is not None
+                else "No MediaPipe record"
+            )
         )
         self.update()
 
@@ -404,6 +460,7 @@ class LandmarkImageWidget(QWidget):
         )
         painter.drawPixmap(target_rect, self.image)
         if self.frame is not None and self.frame.status == "ok":
+
             def draw(points: np.ndarray, color: str) -> None:
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor(color))
@@ -413,7 +470,12 @@ class LandmarkImageWidget(QWidget):
                         continue
                     px = target_rect.left() + float(np.clip(x, 0, 1)) * target_rect.width()
                     py = target_rect.top() + float(np.clip(y, 0, 1)) * target_rect.height()
-                    painter.drawEllipse(round(px - radius), round(py - radius), round(2 * radius), round(2 * radius))
+                    painter.drawEllipse(
+                        round(px - radius),
+                        round(py - radius),
+                        round(2 * radius),
+                        round(2 * radius),
+                    )
 
             if self.show_478:
                 draw(self.frame.landmarks478, "#44aaff")
@@ -424,8 +486,6 @@ class LandmarkImageWidget(QWidget):
         painter.setPen(QColor("white"))
         painter.drawText(8, 20, self.status)
         painter.end()
-
-
 
 
 class MeshViewer(QMainWindow):
@@ -443,9 +503,14 @@ class MeshViewer(QMainWindow):
         self.setWindowTitle("MEVIEW 3D QA Viewer")
         self.raw_root = raw_root
         self.active_frames = load_active_frames(active_frames_path)
-        self.indices = {sequence.key: sequence for sequence in scan_sequences(mesh_root, {"lfann-v3": mesh_root})}
+        self.indices = {
+            sequence.key: sequence
+            for sequence in scan_sequences(mesh_root, {"lfann-v3": mesh_root})
+        }
         self.metadata = sequence_metadata(data_root)
-        self.predictions, self.metrics, self.prediction_warnings = prediction_metadata(data_root, results_dir)
+        self.predictions, self.metrics, self.prediction_warnings = prediction_metadata(
+            data_root, results_dir
+        )
         self.landmarks_root = landmarks_root
         self.mediapipe_root = mediapipe_root
         self.sequence: MeshSequence | None = None
@@ -469,8 +534,12 @@ class MeshViewer(QMainWindow):
         splitter.addWidget(self._browser())
         splitter.addWidget(self._viewport())
         splitter.addWidget(self._inspector())
-        self.solid_toggle.toggled.connect(lambda checked: self._mirror_viewport_toggle(self.mesh_layer, checked))
-        self.wire_toggle.toggled.connect(lambda checked: self._mirror_viewport_toggle(self.wire_layer, checked))
+        self.solid_toggle.toggled.connect(
+            lambda checked: self._mirror_viewport_toggle(self.mesh_layer, checked)
+        )
+        self.wire_toggle.toggled.connect(
+            lambda checked: self._mirror_viewport_toggle(self.wire_layer, checked)
+        )
         splitter.setStretchFactor(1, 1)
         root_layout.addWidget(splitter, 1)
         root_layout.addWidget(self._player())
@@ -506,10 +575,21 @@ class MeshViewer(QMainWindow):
         self.wire_toggle = QCheckBox("Wireframe")
         self.axes_toggle = QCheckBox("Axes")
         self.axes_toggle.setChecked(True)
-        for toggle in (self.solid_toggle, self.original_color_toggle, self.wire_toggle, self.axes_toggle):
+        for toggle in (
+            self.solid_toggle,
+            self.original_color_toggle,
+            self.wire_toggle,
+            self.axes_toggle,
+        ):
             toggle.toggled.connect(self.refresh_view)
             controls.addWidget(toggle)
-        for label, callback in (("Reset", self.reset_camera), ("Front", lambda: self.plotter.view_xy()), ("Side", lambda: self.plotter.view_yz()), ("Top", lambda: self.plotter.view_xz()), ("Screenshot", self.screenshot)):
+        for label, callback in (
+            ("Reset", self.reset_camera),
+            ("Front", lambda: self.plotter.view_xy()),
+            ("Side", lambda: self.plotter.view_yz()),
+            ("Top", lambda: self.plotter.view_xz()),
+            ("Screenshot", self.screenshot),
+        ):
             button = QPushButton(label)
             button.clicked.connect(callback)
             controls.addWidget(button)
@@ -546,7 +626,6 @@ class MeshViewer(QMainWindow):
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.info)
 
-
         layers = QGroupBox("Diagnostic layers (not 3456-D features)")
         layers_layout = QGridLayout(layers)
         self.mesh_layer = QCheckBox()
@@ -558,17 +637,36 @@ class MeshViewer(QMainWindow):
         self.pooling_toggle = QCheckBox("Pooling debug")
         self.pool_bin = QSpinBox()
         self.pool_bin.setRange(0, 63)
-        for row, (name, control) in enumerate((("Mesh", self.mesh_layer), ("Wireframe", self.wire_layer), ("Displacement", self.displacement_toggle), ("Velocity", self.velocity_toggle), ("Acceleration", self.acceleration_toggle), ("Pooling debug", self.pooling_toggle))):
+        for row, (name, control) in enumerate(
+            (
+                ("Mesh", self.mesh_layer),
+                ("Wireframe", self.wire_layer),
+                ("Displacement", self.displacement_toggle),
+                ("Velocity", self.velocity_toggle),
+                ("Acceleration", self.acceleration_toggle),
+                ("Pooling debug", self.pooling_toggle),
+            )
+        ):
             layers_layout.addWidget(QLabel(name), row, 0)
             layers_layout.addWidget(control, row, 1)
         layers_layout.addWidget(QLabel("Pool bin"), 6, 0)
         layers_layout.addWidget(self.pool_bin, 6, 1)
-        for layer, toggle in (("displacement", self.displacement_toggle), ("velocity", self.velocity_toggle), ("acceleration", self.acceleration_toggle)):
-            toggle.toggled.connect(lambda checked, selected=layer: self.set_motion_layer(selected, checked))
+        for layer, toggle in (
+            ("displacement", self.displacement_toggle),
+            ("velocity", self.velocity_toggle),
+            ("acceleration", self.acceleration_toggle),
+        ):
+            toggle.toggled.connect(
+                lambda checked, selected=layer: self.set_motion_layer(selected, checked)
+            )
         self.pooling_toggle.toggled.connect(self.refresh_view)
         self.pool_bin.valueChanged.connect(self.refresh_view)
-        self.mesh_layer.toggled.connect(lambda checked: self._mirror_inspector_toggle(self.solid_toggle, checked))
-        self.wire_layer.toggled.connect(lambda checked: self._mirror_inspector_toggle(self.wire_toggle, checked))
+        self.mesh_layer.toggled.connect(
+            lambda checked: self._mirror_inspector_toggle(self.solid_toggle, checked)
+        )
+        self.wire_layer.toggled.connect(
+            lambda checked: self._mirror_inspector_toggle(self.wire_toggle, checked)
+        )
         layout.addWidget(layers)
 
         landmark_group = QGroupBox("Landmarks")
@@ -582,11 +680,18 @@ class MeshViewer(QMainWindow):
         self.landmark_size.setValue(10)
         color = QPushButton("Color")
         color.clicked.connect(self.choose_landmark_color)
-        for control in (self.landmark_toggle, self.landmark_labels_toggle, self.landmark_choice, self.landmark_size):
+        for control in (
+            self.landmark_toggle,
+            self.landmark_labels_toggle,
+            self.landmark_choice,
+            self.landmark_size,
+        ):
             if hasattr(control, "toggled"):
                 control.toggled.connect(self.refresh_view)
             else:
-                control.currentTextChanged.connect(self.refresh_view) if isinstance(control, QComboBox) else control.valueChanged.connect(self.refresh_view)
+                control.currentTextChanged.connect(self.refresh_view) if isinstance(
+                    control, QComboBox
+                ) else control.valueChanged.connect(self.refresh_view)
         landmark_layout.addRow(self.landmark_status)
         landmark_layout.addRow(self.landmark_toggle)
         landmark_layout.addRow(self.landmark_labels_toggle)
@@ -603,7 +708,11 @@ class MeshViewer(QMainWindow):
         self.mediapipe_20_toggle.setChecked(True)
         self.mediapipe_roi_toggle = QCheckBox("ROI centers")
         self.mediapipe_roi_toggle.setChecked(True)
-        for control in (self.mediapipe_478_toggle, self.mediapipe_20_toggle, self.mediapipe_roi_toggle):
+        for control in (
+            self.mediapipe_478_toggle,
+            self.mediapipe_20_toggle,
+            self.mediapipe_roi_toggle,
+        ):
             control.toggled.connect(self.refresh_view)
         mediapipe_layout.addRow(self.mediapipe_478_toggle)
         mediapipe_layout.addRow(self.mediapipe_20_toggle)
@@ -615,7 +724,13 @@ class MeshViewer(QMainWindow):
     def _player(self) -> QWidget:
         panel = QFrame()
         layout = QHBoxLayout(panel)
-        for label, callback in (("|<", self.first_frame), ("<", self.previous_frame), (">", self.toggle_play), (">|", self.next_frame), (">|>", self.last_frame)):
+        for label, callback in (
+            ("|<", self.first_frame),
+            ("<", self.previous_frame),
+            (">", self.toggle_play),
+            (">|", self.next_frame),
+            (">|>", self.last_frame),
+        ):
             button = QToolButton()
             button.setText(label)
             button.clicked.connect(callback)
@@ -662,15 +777,29 @@ class MeshViewer(QMainWindow):
             for variant in sorted({sequence.variant for sequence in self.indices.values()}):
                 variant_item = QTreeWidgetItem([variant.upper()])
                 self.sequence_tree.addTopLevelItem(variant_item)
-                for subject in sorted({sequence.subject for sequence in self.indices.values() if sequence.variant == variant}):
+                for subject in sorted(
+                    {
+                        sequence.subject
+                        for sequence in self.indices.values()
+                        if sequence.variant == variant
+                    }
+                ):
                     subject_item = QTreeWidgetItem([subject])
                     variant_item.addChild(subject_item)
                     for sequence in sorted(
-                        (sequence for sequence in self.indices.values() if sequence.variant == variant and sequence.subject == subject),
+                        (
+                            sequence
+                            for sequence in self.indices.values()
+                            if sequence.variant == variant and sequence.subject == subject
+                        ),
                         key=lambda sequence: sequence.video,
                     ):
                         active = self.active_frames.get(f"{sequence.subject}_{sequence.video}")
-                        timing = f" · onset F{active[0]}–offset F{active[1]}" if active else " · onset–offset unavailable"
+                        timing = (
+                            f" · onset F{active[0]}–offset F{active[1]}"
+                            if active
+                            else " · onset–offset unavailable"
+                        )
                         video_item = QTreeWidgetItem([f"Video {sequence.video}{timing}"])
                         video_item.setData(0, Qt.ItemDataRole.UserRole, sequence.key)
                         subject_item.addChild(video_item)
@@ -719,7 +848,9 @@ class MeshViewer(QMainWindow):
                 note = f"; mesh F{synced + 1}–{len(sequence.frames)} has no raw frame"
             else:
                 note = ""
-            self.raw_status.setText(f"Locked: mesh F1–{synced} ↔ raw F1–{synced} at {self.raw_video.fps:g} FPS{note}")
+            self.raw_status.setText(
+                f"Locked: mesh F1–{synced} ↔ raw F1–{synced} at {self.raw_video.fps:g} FPS{note}"
+            )
         active = self.active_frames.get(f"{index.subject}_{index.video}")
         if active and active[0] in index.frames:
             sequence.set_reference(active[0])
@@ -727,19 +858,39 @@ class MeshViewer(QMainWindow):
         self.sequence_status.setText(f"Ready: {len(sequence.frames)} frames")
         self.sequence_details.setText(self._metadata_text(index, active))
         self.timeline.setRange(0, len(sequence.frames) - 1)
-        maximum_label = f"{len(sequence.frames)} / {len(sequence.frames)} (frame {sequence.frames[-1]})"
-        self.frame_label.setFixedWidth(self.frame_label.fontMetrics().horizontalAdvance(maximum_label) + 8)
-        active_start = sequence.frames.index(active[0]) if active and active[0] in sequence.frames else None
-        active_end = sequence.frames.index(active[1]) if active and active[1] in sequence.frames else None
-        self.timeline.set_markers(active_start, active_end, sequence.frames.index(sequence.reference_frame))
-        self.active_label.setText(f"Onset–offset F{active[0]}–F{active[1]}" if active else "Onset–offset —")
+        maximum_label = (
+            f"{len(sequence.frames)} / {len(sequence.frames)} (frame {sequence.frames[-1]})"
+        )
+        self.frame_label.setFixedWidth(
+            self.frame_label.fontMetrics().horizontalAdvance(maximum_label) + 8
+        )
+        active_start = (
+            sequence.frames.index(active[0]) if active and active[0] in sequence.frames else None
+        )
+        active_end = (
+            sequence.frames.index(active[1]) if active and active[1] in sequence.frames else None
+        )
+        self.timeline.set_markers(
+            active_start, active_end, sequence.frames.index(sequence.reference_frame)
+        )
+        self.active_label.setText(
+            f"Onset–offset F{active[0]}–F{active[1]}" if active else "Onset–offset —"
+        )
         self.reference_label.setText(f"Ref F{sequence.reference_frame}")
         self.set_frame_by_index(0)
         self.reset_camera()
 
     def _metadata_text(self, index: SequenceIndex, active: tuple[int, int] | None) -> str:
         metadata = self.metadata.get(index.key, {})
-        return "\n".join((f"Label: {metadata.get('label', 'unknown')}", f"Subject/video: {index.subject}/{index.video}", f"Onset–offset: F{active[0]}–F{active[1]}" if active else "Onset–offset: unavailable"))
+        return "\n".join(
+            (
+                f"Label: {metadata.get('label', 'unknown')}",
+                f"Subject/video: {index.subject}/{index.video}",
+                f"Onset–offset: F{active[0]}–F{active[1]}"
+                if active
+                else "Onset–offset: unavailable",
+            )
+        )
 
     def _mirror_viewport_toggle(self, inspector_toggle: QCheckBox, checked: bool) -> None:
         with QSignalBlocker(inspector_toggle):
@@ -751,19 +902,37 @@ class MeshViewer(QMainWindow):
         self.refresh_view()
 
     def _load_landmarks(self, sequence: MeshSequence) -> None:
-        mapping_path = None if self.landmarks_root is None else self.landmarks_root / f"{sequence.index.variant}.json"
+        mapping_path = (
+            None
+            if self.landmarks_root is None
+            else self.landmarks_root / f"{sequence.index.variant}.json"
+        )
         try:
-            self.landmark_mapping = load_landmarks(self.landmarks_root, sequence.index.variant, sequence.mesh.n_points)
+            self.landmark_mapping = load_landmarks(
+                self.landmarks_root, sequence.index.variant, sequence.mesh.n_points
+            )
         except ValueError as exc:
             self.landmark_mapping = None
             self.landmark_status.setText(str(exc))
         if self.landmark_mapping is None:
             if mapping_path is None or not mapping_path.is_file():
-                self.landmark_status.setText(f"No landmark mapping found for {sequence.index.variant}")
-            for control in (self.landmark_toggle, self.landmark_labels_toggle, self.landmark_choice, self.landmark_size):
+                self.landmark_status.setText(
+                    f"No landmark mapping found for {sequence.index.variant}"
+                )
+            for control in (
+                self.landmark_toggle,
+                self.landmark_labels_toggle,
+                self.landmark_choice,
+                self.landmark_size,
+            ):
                 control.setEnabled(False)
             return
-        for control in (self.landmark_toggle, self.landmark_labels_toggle, self.landmark_choice, self.landmark_size):
+        for control in (
+            self.landmark_toggle,
+            self.landmark_labels_toggle,
+            self.landmark_choice,
+            self.landmark_size,
+        ):
             control.setEnabled(True)
         self.landmark_status.setText(f"{len(self.landmark_mapping.landmarks)} mapped landmarks")
         with QSignalBlocker(self.landmark_choice):
@@ -794,19 +963,24 @@ class MeshViewer(QMainWindow):
             self.mediapipe_image.status = error
             self.mediapipe_image.update()
 
-
     def set_reference_to_current(self) -> None:
         if self.sequence is None:
             return
         self.sequence.set_reference(self.sequence.current_frame)
         self.reference_label.setText(f"Ref F{self.sequence.reference_frame}")
-        self.timeline.set_markers(self.timeline.active_start, self.timeline.active_end, self.timeline.value())
+        self.timeline.set_markers(
+            self.timeline.active_start, self.timeline.active_end, self.timeline.value()
+        )
         self.refresh_view()
 
     def set_motion_layer(self, layer: str, checked: bool) -> None:
         if checked:
             self.motion_layer = layer
-            for other, toggle in (("displacement", self.displacement_toggle), ("velocity", self.velocity_toggle), ("acceleration", self.acceleration_toggle)):
+            for other, toggle in (
+                ("displacement", self.displacement_toggle),
+                ("velocity", self.velocity_toggle),
+                ("acceleration", self.acceleration_toggle),
+            ):
                 if other != layer:
                     with QSignalBlocker(toggle):
                         toggle.setChecked(False)
@@ -826,18 +1000,23 @@ class MeshViewer(QMainWindow):
             return
         if not self._advancing:
             self._seek_raw_frame(resume=self.timer.isActive())
-        self.frame_label.setText(f"{frame_index + 1} / {len(self.sequence.frames)} (frame {self.sequence.current_frame})")
+        self.frame_label.setText(
+            f"{frame_index + 1} / {len(self.sequence.frames)} (frame {self.sequence.current_frame})"
+        )
         self.refresh_view()
 
     def _seek_raw_frame(self, *, resume: bool = False) -> None:
-        if self.sequence is None or self.raw_video is None or self.sequence.current_frame > self.raw_video.frame_count:
+        if (
+            self.sequence is None
+            or self.raw_video is None
+            or self.sequence.current_frame > self.raw_video.frame_count
+        ):
             return
         self.raw_player.pause()
         self.raw_player.setPosition(self.raw_video.position_ms(self.sequence.current_frame))
         if resume:
             self.raw_player.setPlaybackRate(self._raw_playback_rate())
             self.raw_player.play()
-
 
     def refresh_view(self) -> None:
         if self.sequence is None:
@@ -852,7 +1031,11 @@ class MeshViewer(QMainWindow):
                 mesh.point_data["diagnostic_motion"] = scalars
             mesh.GetPointData().GetArray("diagnostic_motion").Modified()
             mesh.Modified()
-        mesh_style = (self.solid_toggle.isChecked(), scalars is not None, self.original_color_toggle.isChecked())
+        mesh_style = (
+            self.solid_toggle.isChecked(),
+            scalars is not None,
+            self.original_color_toggle.isChecked(),
+        )
         if mesh_style != self._mesh_style:
             self.plotter.remove_actor("mesh", render=False)
             if mesh_style[0] or mesh_style[1]:
@@ -863,7 +1046,12 @@ class MeshViewer(QMainWindow):
                     "specular": 0.15,
                 }
                 if mesh_style[1]:
-                    mesh_args.update(scalars="diagnostic_motion", cmap="turbo", clim=MOTION_CLIM, show_scalar_bar=True)
+                    mesh_args.update(
+                        scalars="diagnostic_motion",
+                        cmap="turbo",
+                        clim=MOTION_CLIM,
+                        show_scalar_bar=True,
+                    )
                 elif mesh_style[2]:
                     mesh_args.update(scalars="vertex_colors", rgb=True)
                 else:
@@ -874,7 +1062,13 @@ class MeshViewer(QMainWindow):
         if wire_visible != self._wire_visible:
             self.plotter.remove_actor("wireframe", render=False)
             if wire_visible:
-                self.plotter.add_mesh(mesh, name="wireframe", style="wireframe", color="#111111", line_width=1)
+                self.plotter.add_mesh(
+                    mesh,
+                    name="wireframe",
+                    style="wireframe",
+                    color="#111111",
+                    line_width=1,
+                )
             self._wire_visible = wire_visible
         self._update_pooling(mesh)
         self._update_landmarks(mesh)
@@ -891,51 +1085,106 @@ class MeshViewer(QMainWindow):
         if not self.pooling_toggle.isChecked() or self.sequence is None:
             return
         indices, response = self.sequence.pooling_bin(self.pool_bin.value())
-        self.plotter.add_mesh(pv.PolyData(mesh.points[indices]), name="pooling-bin", color="#ff00ff", point_size=5, render_points_as_spheres=True)
+        self.plotter.add_mesh(
+            pv.PolyData(mesh.points[indices]),
+            name="pooling-bin",
+            color="#ff00ff",
+            point_size=5,
+            render_points_as_spheres=True,
+        )
         self._pooling_response = response
 
     def _update_landmarks(self, mesh: pv.PolyData) -> None:
         for name in ("landmarks", "landmark-labels", "landmark-trajectories"):
             self.plotter.remove_actor(name, render=False)
-        if self.landmark_mapping is None or not self.landmark_toggle.isChecked() or self.sequence is None:
+        if (
+            self.landmark_mapping is None
+            or not self.landmark_toggle.isChecked()
+            or self.sequence is None
+        ):
             return
         selection = self.landmark_choice.currentText()
-        items = list(self.landmark_mapping.landmarks.items()) if selection == "All landmarks" else [(selection, self.landmark_mapping.landmarks[selection])]
+        items = (
+            list(self.landmark_mapping.landmarks.items())
+            if selection == "All landmarks"
+            else [(selection, self.landmark_mapping.landmarks[selection])]
+        )
         names, indices = zip(*items, strict=True)
         points = mesh.points[list(indices)]
-        self.plotter.add_mesh(pv.PolyData(points), name="landmarks", color=self.landmark_color.name(), point_size=self.landmark_size.value(), render_points_as_spheres=True)
+        self.plotter.add_mesh(
+            pv.PolyData(points),
+            name="landmarks",
+            color=self.landmark_color.name(),
+            point_size=self.landmark_size.value(),
+            render_points_as_spheres=True,
+        )
         reference_points = self.sequence.cache.get(self.sequence.reference_frame)[list(indices)]
-        line_cells = np.concatenate([np.array([2, 2 * number, 2 * number + 1]) for number in range(len(indices))])
+        line_cells = np.concatenate(
+            [np.array([2, 2 * number, 2 * number + 1]) for number in range(len(indices))]
+        )
         paths = pv.PolyData(np.vstack((reference_points, points)), lines=line_cells)
-        self.plotter.add_mesh(paths, name="landmark-trajectories", color=self.landmark_color.name(), line_width=2)
+        self.plotter.add_mesh(
+            paths,
+            name="landmark-trajectories",
+            color=self.landmark_color.name(),
+            line_width=2,
+        )
         if self.landmark_labels_toggle.isChecked():
-            self.plotter.add_point_labels(points, list(names), name="landmark-labels", font_size=10, text_color="white", shape=None, always_visible=True)
+            self.plotter.add_point_labels(
+                points,
+                list(names),
+                name="landmark-labels",
+                font_size=10,
+                text_color="white",
+                shape=None,
+                always_visible=True,
+            )
 
-    def _update_inspector(self, diagnostics: dict[str, np.ndarray | None], scalars: np.ndarray | None) -> None:
+    def _update_inspector(
+        self, diagnostics: dict[str, np.ndarray | None], scalars: np.ndarray | None
+    ) -> None:
         assert self.sequence is not None
         points = self.sequence.mesh.points
-        active = self.active_frames.get(f"{self.sequence.index.subject}_{self.sequence.index.video}")
+        active = self.active_frames.get(
+            f"{self.sequence.index.subject}_{self.sequence.index.video}"
+        )
         prediction = self.predictions.get(self.sequence.index.key)
         motion = []
         for name, values in diagnostics.items():
-            motion.append(f"{name}: unavailable" if values is None else f"{name}: max={values.max():.6g}, mean={values.mean():.6g}")
+            motion.append(
+                f"{name}: unavailable"
+                if values is None
+                else f"{name}: max={values.max():.6g}, mean={values.mean():.6g}"
+            )
         if self.pooling_toggle.isChecked() and hasattr(self, "_pooling_response"):
-            motion.append(f"pooling debug bin {self.pool_bin.value()}: max response={self._pooling_response:.6g}")
-        result = "Prediction mapping unavailable" if prediction is None else f"Prediction: {prediction['true_label']} → {prediction['predicted_label']} ({'correct' if prediction['correct'] == 'True' else 'wrong'})"
+            motion.append(
+                f"pooling debug bin {self.pool_bin.value()}: max response={self._pooling_response:.6g}"
+            )
+        result = (
+            "Prediction mapping unavailable"
+            if prediction is None
+            else f"Prediction: {prediction['true_label']} → {prediction['predicted_label']} ({'correct' if prediction['correct'] == 'True' else 'wrong'})"
+        )
         warning = "\n".join(self.prediction_warnings)
         metric = self.metrics.get(self.sequence.index.variant, {})
         metric_text = f"Metrics: accuracy={metric.get('accuracy', 'n/a')}, UAR={metric.get('uar', 'n/a')}, UF1={metric.get('uf1', 'n/a')}"
-        self.info.setText("\n".join((
-            f"Frame: {self.sequence.current_frame}; reference: {self.sequence.reference_frame}",
-            f"File: {self.sequence.index.frames[self.sequence.current_frame]['npy']}",
-            f"Vertices/faces: {self.sequence.mesh.n_points}/{self.sequence.mesh.n_cells}",
-            f"Bounds: min={points.min(axis=0).round(5).tolist()} max={points.max(axis=0).round(5).tolist()}",
-            f"Active window: {active[0]}–{active[1]}" if active else "Active window: unavailable",
-            *motion,
-            result,
-            metric_text,
-            warning,
-        )))
+        self.info.setText(
+            "\n".join(
+                (
+                    f"Frame: {self.sequence.current_frame}; reference: {self.sequence.reference_frame}",
+                    f"File: {self.sequence.index.frames[self.sequence.current_frame]['npy']}",
+                    f"Vertices/faces: {self.sequence.mesh.n_points}/{self.sequence.mesh.n_cells}",
+                    f"Bounds: min={points.min(axis=0).round(5).tolist()} max={points.max(axis=0).round(5).tolist()}",
+                    f"Active window: {active[0]}–{active[1]}"
+                    if active
+                    else "Active window: unavailable",
+                    *motion,
+                    result,
+                    metric_text,
+                    warning,
+                )
+            )
+        )
 
     def first_frame(self) -> None:
         self.timeline.setValue(self.timeline.minimum())
@@ -966,7 +1215,11 @@ class MeshViewer(QMainWindow):
             self._advancing = False
 
     def _raw_playback_rate(self) -> float:
-        return 1.0 if self.raw_video is None else self.fps_spin.value() * self.speed_spin.value() / self.raw_video.fps
+        return (
+            1.0
+            if self.raw_video is None
+            else self.fps_spin.value() * self.speed_spin.value() / self.raw_video.fps
+        )
 
     def _set_playing(self, playing: bool) -> None:
         self.play_button.setText("||" if playing else ">")
@@ -998,7 +1251,9 @@ class MeshViewer(QMainWindow):
         self.plotter.render()
 
     def screenshot(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Save screenshot", "mesh-qa.png", "PNG image (*.png)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save screenshot", "mesh-qa.png", "PNG image (*.png)"
+        )
         if path:
             self.plotter.screenshot(path)
 
