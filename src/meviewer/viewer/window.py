@@ -851,6 +851,11 @@ class MeshViewer(QMainWindow):
             else self.fps_spin.value() * self.speed_spin.value() / self.raw_video.fps
         )
 
+    def update_timer_interval(self) -> None:
+        self.timer.setInterval(round(1000 / (self.fps_spin.value() * self.speed_spin.value())))
+        if self.timer.isActive() and self.raw_video is not None:
+            self.raw_player.setPlaybackRate(self._raw_playback_rate())
+
     def _set_playing(self, playing: bool) -> None:
         icon = (
             QStyle.StandardPixmap.SP_MediaPause if playing else QStyle.StandardPixmap.SP_MediaPlay
