@@ -64,11 +64,13 @@ def diagnostic_scalar_bar_args(
     return {
         "title": f"{metric} (P99 {clim[1]:.3g})" if auto else f"{metric} (fixed 0–1)",
         "vertical": True,
-        "width": 0.08,
-        "height": 0.55,
-        "position_x": 0.88,
-        "position_y": 0.22,
-        "title_font_size": 10,
+        "width": 0.12,
+        "height": 0.58,
+        "position_x": 0.76,
+        "position_y": 0.21,
+        "n_labels": 4,
+        "fmt": "%.3g",
+        "title_font_size": 9,
         "label_font_size": 8,
     }
 
