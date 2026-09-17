@@ -19,14 +19,17 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
+    QStyle,
     QTabWidget,
     QToolButton,
     QTreeWidget,
@@ -36,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 from pyvistaqt import QtInteractor
 
+from meviewer.annotations import BROW_DIRECTIONS, MOUTH_DIRECTIONS, ROIS, RegionalMotionAnnotation
 from meviewer.assets import SequenceIndex
 from meviewer.viewer.session import (
     LandmarkMapping,
@@ -43,9 +47,16 @@ from meviewer.viewer.session import (
     RawVideo,
     ViewerSession,
 )
-from meviewer.viewer.widgets import ActiveFrameSlider, LandmarkImageWidget
+from meviewer.viewer.widgets import ActiveFrameSlider, LandmarkImageWidget, RegionalMotionChart
 
-MOTION_CLIM = (0.0, 1.0)
+FIXED_MOTION_CLIM = (0.0, 1.0)
+
+
+def diagnostic_color_limits(maximum: float | None, *, auto: bool) -> tuple[float, float]:
+    """Return the absolute scale or a stable whole-sequence contrast scale."""
+    if not auto or maximum is None or maximum <= np.finfo(float).eps:
+        return FIXED_MOTION_CLIM
+    return (0.0, maximum)
 
 
 class MeshViewer(QMainWindow):
@@ -58,6 +69,7 @@ class MeshViewer(QMainWindow):
         results_dir: Path | None,
         landmarks_root: Path | None,
         mediapipe_root: Path | None = None,
+        annotation_output: Path | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("MEVIEW 3D QA Viewer")
@@ -69,12 +81,13 @@ class MeshViewer(QMainWindow):
             results_dir,
             landmarks_root,
             mediapipe_root,
+            annotation_output,
         )
         self.snapshot = self.session.snapshot
         self.landmark_color = QColor("#ffcc00")
         self.motion_layer: str | None = None
         self._advancing = False
-        self._mesh_style: tuple[bool, bool, bool] | None = None
+        self._mesh_style: tuple[object, ...] | None = None
         self._wire_visible: bool | None = None
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.advance_frame)
@@ -100,13 +113,10 @@ class MeshViewer(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._browser())
         splitter.addWidget(self._viewport())
-        splitter.addWidget(self._inspector())
-        self.solid_toggle.toggled.connect(
-            lambda checked: self._mirror_viewport_toggle(self.mesh_layer, checked)
-        )
-        self.wire_toggle.toggled.connect(
-            lambda checked: self._mirror_viewport_toggle(self.wire_layer, checked)
-        )
+        inspector_scroll = QScrollArea()
+        inspector_scroll.setWidgetResizable(True)
+        inspector_scroll.setWidget(self._inspector())
+        splitter.addWidget(inspector_scroll)
         splitter.setStretchFactor(1, 1)
         root_layout.addWidget(splitter, 1)
         root_layout.addWidget(self._player())
@@ -140,12 +150,19 @@ class MeshViewer(QMainWindow):
         self.original_color_toggle = QCheckBox("Original colors")
         self.original_color_toggle.setChecked(True)
         self.wire_toggle = QCheckBox("Wireframe")
+        self.auto_contrast_toggle = QCheckBox("Auto contrast (P99)")
+        self.auto_contrast_toggle.setChecked(True)
+        self.auto_contrast_toggle.setToolTip(
+            "Scale diagnostic colors to the selected sequence's 99th percentile. "
+            "Turn off for fixed 0–1 values."
+        )
         self.axes_toggle = QCheckBox("Axes")
         self.axes_toggle.setChecked(True)
         for toggle in (
             self.solid_toggle,
             self.original_color_toggle,
             self.wire_toggle,
+            self.auto_contrast_toggle,
             self.axes_toggle,
         ):
             toggle.toggled.connect(self.refresh_view)
@@ -156,6 +173,7 @@ class MeshViewer(QMainWindow):
             ("Side", lambda: self.plotter.view_yz()),
             ("Top", lambda: self.plotter.view_xz()),
             ("Screenshot", self.screenshot),
+            ("Export review PNG…", self.export_review),
         ):
             button = QPushButton(label)
             button.clicked.connect(callback)
@@ -180,6 +198,27 @@ class MeshViewer(QMainWindow):
         self.plotter.set_background("#202124")
         self.plotter.add_axes()
         comparison.addWidget(self.plotter)
+        self.review_pane = QFrame()
+        review_layout = QVBoxLayout(self.review_pane)
+        self.review_context = QLabel("Review context: no mesh sequence selected")
+        self.review_context.setWordWrap(True)
+        self.motion_metric = QComboBox()
+        self.motion_metric.addItems(("Displacement", "Velocity", "Acceleration"))
+        self.motion_metric.setToolTip("Choose the regional-motion evidence shown in the chart.")
+        self.motion_metric.setAccessibleName("Motion evidence")
+        self.motion_metric.currentTextChanged.connect(self._render_review_chart)
+        self.chart_status = QLabel()
+        self.chart_status.setWordWrap(True)
+        metric_controls = QHBoxLayout()
+        metric_controls.addWidget(QLabel("Motion evidence"))
+        metric_controls.addWidget(self.motion_metric)
+        metric_controls.addStretch()
+        review_layout.addLayout(metric_controls)
+        review_layout.addWidget(self.chart_status)
+        review_layout.addWidget(self.review_context)
+        self.review_chart = RegionalMotionChart()
+        review_layout.addWidget(self.review_chart)
+        layout.addWidget(self.review_pane)
         comparison.setStretchFactor(0, 1)
         comparison.setStretchFactor(1, 2)
         layout.addWidget(comparison, 1)
@@ -193,52 +232,37 @@ class MeshViewer(QMainWindow):
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.info)
 
-        layers = QGroupBox("Diagnostic layers (not 3456-D features)")
-        layers_layout = QGridLayout(layers)
-        self.mesh_layer = QCheckBox()
-        self.mesh_layer.setChecked(True)
-        self.wire_layer = QCheckBox()
-        self.displacement_toggle = QCheckBox("Displacement")
-        self.velocity_toggle = QCheckBox("Velocity")
-        self.acceleration_toggle = QCheckBox("Acceleration")
+        diagnostic = QGroupBox("Diagnostic overlay")
+        diagnostic_layout = QFormLayout(diagnostic)
+        self.diagnostic_overlay = QComboBox()
+        self.diagnostic_overlay.addItems(("None", "Displacement", "Velocity", "Acceleration"))
+        self.diagnostic_overlay.currentTextChanged.connect(self.set_motion_layer)
+        diagnostic_layout.addRow("Diagnostic overlay", self.diagnostic_overlay)
+        layout.addWidget(diagnostic)
+
+        self.advanced_debug = QGroupBox("Advanced debug")
+        self.advanced_debug.setCheckable(True)
+        self.advanced_debug.setChecked(False)
+        advanced_body = QWidget()
+        advanced_layout = QVBoxLayout(advanced_body)
+        self.advanced_debug.toggled.connect(advanced_body.setVisible)
+        advanced_body.setVisible(False)
+
+        pooling = QGroupBox("Pooling")
+        pooling_layout = QFormLayout(pooling)
         self.pooling_toggle = QCheckBox("Pooling debug")
         self.pool_bin = QSpinBox()
         self.pool_bin.setRange(0, 63)
-        for row, (name, control) in enumerate(
-            (
-                ("Mesh", self.mesh_layer),
-                ("Wireframe", self.wire_layer),
-                ("Displacement", self.displacement_toggle),
-                ("Velocity", self.velocity_toggle),
-                ("Acceleration", self.acceleration_toggle),
-                ("Pooling debug", self.pooling_toggle),
-            )
-        ):
-            layers_layout.addWidget(QLabel(name), row, 0)
-            layers_layout.addWidget(control, row, 1)
-        layers_layout.addWidget(QLabel("Pool bin"), 6, 0)
-        layers_layout.addWidget(self.pool_bin, 6, 1)
-        for layer, toggle in (
-            ("displacement", self.displacement_toggle),
-            ("velocity", self.velocity_toggle),
-            ("acceleration", self.acceleration_toggle),
-        ):
-            toggle.toggled.connect(
-                lambda checked, selected=layer: self.set_motion_layer(selected, checked)
-            )
         self.pooling_toggle.toggled.connect(self.refresh_view)
         self.pool_bin.valueChanged.connect(self.refresh_view)
-        self.mesh_layer.toggled.connect(
-            lambda checked: self._mirror_inspector_toggle(self.solid_toggle, checked)
-        )
-        self.wire_layer.toggled.connect(
-            lambda checked: self._mirror_inspector_toggle(self.wire_toggle, checked)
-        )
-        layout.addWidget(layers)
+        pooling_layout.addRow(self.pooling_toggle)
+        pooling_layout.addRow("Pool bin", self.pool_bin)
+        advanced_layout.addWidget(pooling)
 
-        landmark_group = QGroupBox("Landmarks")
+        landmark_group = QGroupBox("3D landmarks")
         landmark_layout = QFormLayout(landmark_group)
         self.landmark_status = QLabel("No landmark mapping found")
+        self.landmark_status.setWordWrap(True)
         self.landmark_toggle = QCheckBox("Markers")
         self.landmark_labels_toggle = QCheckBox("Labels")
         self.landmark_choice = QComboBox()
@@ -265,10 +289,10 @@ class MeshViewer(QMainWindow):
         landmark_layout.addRow("Selection", self.landmark_choice)
         landmark_layout.addRow("Marker size", self.landmark_size)
         landmark_layout.addRow(color)
-        layout.addWidget(landmark_group)
+        advanced_layout.addWidget(landmark_group)
 
-        mediapipe_group = QGroupBox("MediaPipe illustration")
-        mediapipe_layout = QFormLayout(mediapipe_group)
+        self.mediapipe_group = QGroupBox("MediaPipe illustration")
+        mediapipe_layout = QFormLayout(self.mediapipe_group)
         self.mediapipe_478_toggle = QCheckBox("478 points")
         self.mediapipe_478_toggle.setChecked(True)
         self.mediapipe_20_toggle = QCheckBox("Configured 20")
@@ -284,26 +308,78 @@ class MeshViewer(QMainWindow):
         mediapipe_layout.addRow(self.mediapipe_478_toggle)
         mediapipe_layout.addRow(self.mediapipe_20_toggle)
         mediapipe_layout.addRow(self.mediapipe_roi_toggle)
-        layout.addWidget(mediapipe_group)
-        layout.addStretch()
+        advanced_layout.addWidget(self.mediapipe_group)
+        self.advanced_debug.setLayout(QVBoxLayout())
+        self.advanced_debug.layout().addWidget(advanced_body)
+        layout.addWidget(self.advanced_debug)
+
+        self.review_conclusion = QGroupBox("Review conclusion")
+        self.review_conclusion.setCheckable(True)
+        self.review_conclusion.setChecked(False)
+        annotation_body = QWidget()
+        annotation_layout = QFormLayout(annotation_body)
+        self.review_conclusion.toggled.connect(annotation_body.setVisible)
+        annotation_body.setVisible(False)
+        self.annotation_rows = QComboBox()
+        self.annotation_roi = QComboBox()
+        self.annotation_roi.addItems(ROIS)
+        self.annotation_direction = QComboBox()
+        self.annotation_confidence = QSpinBox()
+        self.annotation_confidence.setRange(1, 3)
+        self.annotation_start = QComboBox()
+        self.annotation_end = QComboBox()
+        self.annotation_note = QLineEdit()
+        self.annotation_note.setPlaceholderText("Optional reviewer note")
+        self.annotation_save = QPushButton("Save interval")
+        self.annotation_delete = QPushButton("Delete selected")
+        self.annotation_reload = QPushButton("Reload annotations")
+        self.annotation_status = QLabel()
+        self.annotation_status.setWordWrap(True)
+        self.annotation_rows.currentIndexChanged.connect(self._load_annotation_controls)
+        self.annotation_roi.currentTextChanged.connect(self._set_direction_choices)
+        self.annotation_save.clicked.connect(self.save_annotation_interval)
+        self.annotation_delete.clicked.connect(self.delete_selected_annotation)
+        self.annotation_reload.clicked.connect(self.reload_annotations)
+        annotation_layout.addRow("Existing", self.annotation_rows)
+        annotation_layout.addRow("RoI", self.annotation_roi)
+        annotation_layout.addRow("Direction", self.annotation_direction)
+        annotation_layout.addRow("Confidence", self.annotation_confidence)
+        annotation_layout.addRow("Start frame", self.annotation_start)
+        annotation_layout.addRow("End frame", self.annotation_end)
+        annotation_layout.addRow("Note", self.annotation_note)
+        annotation_layout.addRow(self.annotation_save)
+        annotation_layout.addRow(self.annotation_delete)
+        annotation_layout.addRow(self.annotation_reload)
+        annotation_layout.addRow("Status", self.annotation_status)
+        self.review_conclusion.setLayout(QVBoxLayout())
+        self.review_conclusion.layout().addWidget(annotation_body)
+        layout.addWidget(self.review_conclusion)
+        self._set_direction_choices()
         return panel
 
     def _player(self) -> QWidget:
         panel = QFrame()
         layout = QHBoxLayout(panel)
-        for label, callback in (
-            ("|<", self.first_frame),
-            ("<", self.previous_frame),
-            (">", self.toggle_play),
-            (">|", self.next_frame),
-            (">|>", self.last_frame),
+        self.timeline = ActiveFrameSlider()
+        self.timeline.setMinimumHeight(28)
+        self.timeline.valueChanged.connect(self.set_frame_by_index)
+        self.timeline.drag_selected.connect(self.prepare_annotation_interval)
+        self.review_chart.frame_selected.connect(self.set_frame_by_index)
+        self.review_chart.drag_selected.connect(self.prepare_annotation_interval)
+        for icon, name, callback in (
+            (QStyle.StandardPixmap.SP_MediaSkipBackward, "First frame", self.first_frame),
+            (QStyle.StandardPixmap.SP_MediaSeekBackward, "Previous frame", self.previous_frame),
+            (QStyle.StandardPixmap.SP_MediaPlay, "Play", self.toggle_play),
+            (QStyle.StandardPixmap.SP_MediaSeekForward, "Next frame", self.next_frame),
+            (QStyle.StandardPixmap.SP_MediaSkipForward, "Last frame", self.last_frame),
         ):
             button = QToolButton()
-            button.setText(label)
+            button.setIcon(self.style().standardIcon(icon))
+            button.setToolTip(name)
+            button.setAccessibleName(name)
             button.clicked.connect(callback)
-            if label == ">":
+            if name == "Play":
                 self.play_button = button
-                self.play_button.setToolTip("Play")
             layout.addWidget(button)
         self.frame_label = QLabel("0 / 0")
         self.reference_label = QLabel("Ref —")
@@ -311,9 +387,6 @@ class MeshViewer(QMainWindow):
         reference_button = QToolButton()
         reference_button.setText("Set ref")
         reference_button.clicked.connect(self.set_reference_to_current)
-        self.timeline = ActiveFrameSlider()
-        self.timeline.setMinimumHeight(28)
-        self.timeline.valueChanged.connect(self.set_frame_by_index)
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 30)
         self.fps_spin.setValue(10)
@@ -406,7 +479,7 @@ class MeshViewer(QMainWindow):
         self._set_raw_video()
         self._set_landmarks()
         active = self.snapshot.active_frames
-        self.sequence_status.setText(f"Ready: {len(sequence.frames)} frames")
+        self.sequence_status.clear()
         self.sequence_details.setText(self._metadata_text(index, active))
         self.timeline.setRange(0, len(sequence.frames) - 1)
         maximum_label = (
@@ -435,6 +508,7 @@ class MeshViewer(QMainWindow):
             f"(frame {sequence.current_frame})"
         )
         self._set_mediapipe()
+        self._sync_review()
         self.refresh_view()
 
     def _metadata_text(self, index: SequenceIndex, active: tuple[int, int] | None) -> str:
@@ -448,14 +522,7 @@ class MeshViewer(QMainWindow):
             )
         )
 
-    def _mirror_viewport_toggle(self, inspector_toggle: QCheckBox, checked: bool) -> None:
-        with QSignalBlocker(inspector_toggle):
-            inspector_toggle.setChecked(checked)
-
-    def _mirror_inspector_toggle(self, viewport_toggle: QCheckBox, checked: bool) -> None:
-        with QSignalBlocker(viewport_toggle):
-            viewport_toggle.setChecked(checked)
-        self.refresh_view()
+    # Solid mesh and wireframe have one control each, in the viewport toolbar.
 
     def _set_raw_video(self) -> None:
         sequence = self.snapshot.sequence
@@ -509,6 +576,7 @@ class MeshViewer(QMainWindow):
             self.landmark_choice.addItems(sorted(mapping.landmarks))
 
     def _set_mediapipe(self) -> None:
+        self.mediapipe_group.setVisible(self.snapshot.mediapipe_record is not None)
         self.mediapipe_image.show_478 = self.mediapipe_478_toggle.isChecked()
         self.mediapipe_image.show_20 = self.mediapipe_20_toggle.isChecked()
         self.mediapipe_image.show_rois = self.mediapipe_roi_toggle.isChecked()
@@ -519,6 +587,201 @@ class MeshViewer(QMainWindow):
         if self.snapshot.mediapipe_error:
             self.mediapipe_image.status = self.snapshot.mediapipe_error
             self.mediapipe_image.update()
+
+    def _set_direction_choices(self) -> None:
+        choices = (
+            BROW_DIRECTIONS if "brow" in self.annotation_roi.currentText() else MOUTH_DIRECTIONS
+        )
+        current = self.annotation_direction.currentText()
+        with QSignalBlocker(self.annotation_direction):
+            self.annotation_direction.clear()
+            self.annotation_direction.addItems(sorted(choices))
+            self.annotation_direction.setCurrentText(
+                current if current in choices else "not_observable"
+            )
+
+    def _selected_annotation_index(self) -> int | None:
+        selected = self.annotation_rows.currentData()
+        return selected if isinstance(selected, int) else None
+
+    def _load_annotation_controls(self) -> None:
+        selected = self._selected_annotation_index()
+        sequence = self.snapshot.sequence
+        if sequence is None:
+            return
+        self.annotation_delete.setEnabled(
+            selected is not None and selected < len(self.snapshot.annotations)
+        )
+        if selected is None or selected >= len(self.snapshot.annotations):
+            self._set_annotation_interval_controls(sequence.current_frame, sequence.current_frame)
+            return
+        item = self.snapshot.annotations[selected]
+        with (
+            QSignalBlocker(self.annotation_roi),
+            QSignalBlocker(self.annotation_direction),
+            QSignalBlocker(self.annotation_confidence),
+            QSignalBlocker(self.annotation_note),
+        ):
+            self.annotation_roi.setCurrentText(item.roi_name)
+            self._set_direction_choices()
+            self.annotation_direction.setCurrentText(item.direction)
+            self.annotation_confidence.setValue(item.confidence)
+            self.annotation_note.setText(item.note)
+        self._set_annotation_interval_controls(item.start_frame, item.end_frame)
+
+    def _set_annotation_interval_controls(self, start_frame: int, end_frame: int) -> None:
+        sequence = self.snapshot.sequence
+        if sequence is None:
+            return
+        with QSignalBlocker(self.annotation_start), QSignalBlocker(self.annotation_end):
+            for control, frame in (
+                (self.annotation_start, start_frame),
+                (self.annotation_end, end_frame),
+            ):
+                control.clear()
+                for value in sequence.frames:
+                    control.addItem(f"F{value}", value)
+                control.setCurrentIndex(control.findData(frame))
+
+    def _sync_review(self) -> None:
+        sequence = self.snapshot.sequence
+        if sequence is None:
+            return
+        annotations = self.snapshot.annotations
+        markers = [
+            (sequence.frames.index(item.start_frame), sequence.frames.index(item.end_frame))
+            for item in annotations
+        ]
+        self.timeline.set_annotation_markers(markers)
+        self._render_review_chart()
+        active = self.snapshot.active_frames
+        active_text = f"F{active[0]}–F{active[1]}" if active else "unavailable"
+        self.chart_status.setText(self.snapshot.chart_status or "")
+        self.review_context.setText(
+            f"{sequence.index.key} · current F{sequence.current_frame} · active window {active_text} "
+            f"· Review labels: {len(annotations)}"
+        )
+        with QSignalBlocker(self.annotation_rows):
+            current = self._selected_annotation_index()
+            self.annotation_rows.clear()
+            self.annotation_rows.addItem("New interval", None)
+            for number, item in enumerate(annotations):
+                self.annotation_rows.addItem(
+                    f"{item.roi_name}: F{item.start_frame}–F{item.end_frame} · {item.direction}",
+                    number,
+                )
+            if current is not None and current < len(annotations):
+                self.annotation_rows.setCurrentIndex(current + 1)
+            else:
+                self.annotation_rows.setCurrentIndex(0)
+        self._load_annotation_controls()
+
+    def _render_review_chart(self) -> None:
+        sequence = self.snapshot.sequence
+        if sequence is None:
+            return
+        self.review_chart.set_data(
+            tuple(sequence.frames),
+            self.snapshot.chart_data,
+            self.snapshot.active_frames,
+            sequence.frames.index(sequence.current_frame),
+            self.snapshot.annotations,
+            metric=self.motion_metric.currentText().lower(),
+            status=self.snapshot.chart_status,
+        )
+
+    def prepare_annotation_interval(self, start_index: int, end_index: int) -> None:
+        sequence = self.snapshot.sequence
+        if sequence is None:
+            return
+        start_index, end_index = sorted((start_index, end_index))
+        if not (0 <= start_index < len(sequence.frames) and 0 <= end_index < len(sequence.frames)):
+            return
+        with QSignalBlocker(self.annotation_rows):
+            self.annotation_rows.setCurrentIndex(0)
+        self._load_annotation_controls()
+        self._set_annotation_interval_controls(
+            sequence.frames[start_index], sequence.frames[end_index]
+        )
+        self.review_conclusion.setChecked(True)
+
+    def apply_annotation_interval(self, start_index: int, end_index: int) -> None:
+        sequence = self.snapshot.sequence
+        index = self.snapshot.index
+        if sequence is None or index is None:
+            return
+        selected = self._selected_annotation_index()
+        item = RegionalMotionAnnotation(
+            sequence=index.key,
+            roi_name=self.annotation_roi.currentText(),
+            start_frame=sequence.frames[start_index],
+            end_frame=sequence.frames[end_index],
+            direction=self.annotation_direction.currentText(),
+            confidence=self.annotation_confidence.value(),
+            note=self.annotation_note.text(),
+        )
+        annotations = list(self.snapshot.annotations)
+        if selected is None:
+            annotations.append(item)
+        else:
+            annotations[selected] = item
+        try:
+            self.snapshot = self.session.save_annotations(tuple(annotations))
+        except ValueError as exc:
+            self.annotation_status.setText(f"Not saved: {exc}")
+            return
+        self.annotation_status.setText(
+            f"Saved {item.roi_name} F{item.start_frame}–F{item.end_frame}"
+        )
+        self._sync_review()
+
+    def save_annotation_interval(self) -> None:
+        sequence = self.snapshot.sequence
+        if sequence is None:
+            return
+        start_frame = self.annotation_start.currentData()
+        end_frame = self.annotation_end.currentData()
+        if not isinstance(start_frame, int) or not isinstance(end_frame, int):
+            self.annotation_status.setText("Not saved: choose start and end frames")
+            return
+        self.apply_annotation_interval(
+            sequence.frames.index(start_frame), sequence.frames.index(end_frame)
+        )
+
+    def delete_selected_annotation(self) -> None:
+        selected = self._selected_annotation_index()
+        if selected is None:
+            return
+        item = self.snapshot.annotations[selected]
+        answer = QMessageBox.question(
+            self,
+            "Delete annotation",
+            f"Delete {item.roi_name} from F{item.start_frame} through F{item.end_frame}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        annotations = list(self.snapshot.annotations)
+        annotations.pop(selected)
+        try:
+            self.snapshot = self.session.save_annotations(tuple(annotations))
+        except ValueError as exc:
+            self.annotation_status.setText(f"Not deleted: {exc}")
+            return
+        self.annotation_status.setText(
+            f"Deleted {item.roi_name} F{item.start_frame}–F{item.end_frame}"
+        )
+        self._sync_review()
+
+    def reload_annotations(self) -> None:
+        try:
+            self.snapshot = self.session.reload_annotations()
+        except ValueError as exc:
+            self.annotation_status.setText(f"Not reloaded: {exc}")
+            return
+        self.annotation_status.setText("Reloaded annotations")
+        self._sync_review()
 
     def set_reference_to_current(self) -> None:
         sequence = self.snapshot.sequence
@@ -531,19 +794,8 @@ class MeshViewer(QMainWindow):
         )
         self.refresh_view()
 
-    def set_motion_layer(self, layer: str, checked: bool) -> None:
-        if checked:
-            self.motion_layer = layer
-            for other, toggle in (
-                ("displacement", self.displacement_toggle),
-                ("velocity", self.velocity_toggle),
-                ("acceleration", self.acceleration_toggle),
-            ):
-                if other != layer:
-                    with QSignalBlocker(toggle):
-                        toggle.setChecked(False)
-        elif self.motion_layer == layer:
-            self.motion_layer = None
+    def set_motion_layer(self, label: str) -> None:
+        self.motion_layer = None if label == "None" else label.lower()
         self.refresh_view()
 
     def set_frame_by_index(self, frame_index: int) -> None:
@@ -565,6 +817,7 @@ class MeshViewer(QMainWindow):
             f"{frame_index + 1} / {len(sequence.frames)} (frame {sequence.current_frame})"
         )
         self._set_mediapipe()
+        self._sync_review()
         self.refresh_view()
 
     def _seek_raw_frame(self, *, resume: bool = False) -> None:
@@ -584,6 +837,14 @@ class MeshViewer(QMainWindow):
         mesh = self.sequence.mesh
         diagnostics = self.sequence.diagnostics()
         scalars = diagnostics.get(self.motion_layer) if self.motion_layer else None
+        clim = (
+            diagnostic_color_limits(
+                self.sequence.diagnostic_percentile(self.motion_layer),
+                auto=self.auto_contrast_toggle.isChecked(),
+            )
+            if scalars is not None and self.motion_layer is not None
+            else None
+        )
         if scalars is not None:
             if "diagnostic_motion" in mesh.point_data:
                 mesh.point_data["diagnostic_motion"][:] = scalars
@@ -595,6 +856,7 @@ class MeshViewer(QMainWindow):
             self.solid_toggle.isChecked(),
             scalars is not None,
             self.original_color_toggle.isChecked(),
+            clim,
         )
         if mesh_style != self._mesh_style:
             self.plotter.remove_actor("mesh", render=False)
@@ -606,11 +868,19 @@ class MeshViewer(QMainWindow):
                     "specular": 0.15,
                 }
                 if mesh_style[1]:
+                    assert clim is not None
                     mesh_args.update(
                         scalars="diagnostic_motion",
                         cmap="turbo",
-                        clim=MOTION_CLIM,
+                        clim=clim,
                         show_scalar_bar=True,
+                        scalar_bar_args={
+                            "title": (
+                                f"diagnostic_motion (P99 {clim[1]:.3g})"
+                                if self.auto_contrast_toggle.isChecked()
+                                else "diagnostic_motion (fixed 0–1)"
+                            )
+                        },
                     )
                 elif mesh_style[2]:
                     mesh_args.update(scalars="vertex_colors", rgb=True)
@@ -705,46 +975,23 @@ class MeshViewer(QMainWindow):
     ) -> None:
         sequence = self.snapshot.sequence
         assert sequence is not None
-        points = sequence.mesh.points
         active = self.snapshot.active_frames
         prediction = self.snapshot.prediction
-        motion = []
-        for name, values in diagnostics.items():
-            motion.append(
-                f"{name}: unavailable"
-                if values is None
-                else f"{name}: max={values.max():.6g}, mean={values.mean():.6g}"
-            )
-        if self.pooling_toggle.isChecked() and hasattr(self, "_pooling_response"):
-            motion.append(
-                f"pooling debug bin {self.pool_bin.value()}: max response={self._pooling_response:.6g}"
-            )
-        result = (
+        summary = (
             "Prediction mapping unavailable"
             if prediction is None
             else f"Prediction: {prediction['true_label']} → {prediction['predicted_label']} "
             f"({'correct' if prediction['correct'] == 'True' else 'wrong'})"
         )
-        warning = "\n".join(self.snapshot.prediction_warnings)
-        metric = self.snapshot.metrics
-        metric_text = (
-            f"Metrics: accuracy={metric.get('accuracy', 'n/a')}, "
-            f"UAR={metric.get('uar', 'n/a')}, UF1={metric.get('uf1', 'n/a')}"
-        )
         self.info.setText(
             "\n".join(
                 (
-                    f"Frame: {sequence.current_frame}; reference: {sequence.reference_frame}",
-                    f"File: {sequence.index.asset_path(sequence.current_frame, 'vertices')}",
-                    f"Vertices/faces: {sequence.mesh.n_points}/{sequence.mesh.n_cells}",
-                    f"Bounds: min={points.min(axis=0).round(5).tolist()} max={points.max(axis=0).round(5).tolist()}",
-                    f"Active window: {active[0]}–{active[1]}"
+                    f"Sequence: {sequence.index.key}",
+                    f"Current: F{sequence.current_frame}; reference: F{sequence.reference_frame}",
+                    f"Active window: F{active[0]}–F{active[1]}"
                     if active
                     else "Active window: unavailable",
-                    *motion,
-                    result,
-                    metric_text,
-                    warning,
+                    summary,
                 )
             )
         )
@@ -785,8 +1032,13 @@ class MeshViewer(QMainWindow):
         )
 
     def _set_playing(self, playing: bool) -> None:
-        self.play_button.setText("||" if playing else ">")
-        self.play_button.setToolTip("Pause" if playing else "Play")
+        icon = (
+            QStyle.StandardPixmap.SP_MediaPause if playing else QStyle.StandardPixmap.SP_MediaPlay
+        )
+        name = "Pause" if playing else "Play"
+        self.play_button.setIcon(self.style().standardIcon(icon))
+        self.play_button.setToolTip(name)
+        self.play_button.setAccessibleName(name)
 
     def toggle_play(self) -> None:
         if self.sequence is None:
@@ -825,6 +1077,17 @@ class MeshViewer(QMainWindow):
         if color.isValid():
             self.landmark_color = color
             self.refresh_view()
+
+    def export_review(self) -> None:
+        index = self.snapshot.index
+        suggested = (
+            f"{index.key.replace('/', '-')}-review.png" if index is not None else "review.png"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export review PNG", suggested, "PNG image (*.png)"
+        )
+        if path:
+            self.review_pane.grab().save(path)
 
     def closeEvent(self, event: Any) -> None:
         self.timer.stop()
