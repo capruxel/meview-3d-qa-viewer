@@ -39,6 +39,37 @@ meviewer viewer --data-root /path/to/data/dataset \
   --active-frames /path/to/data/active_frames.json
 ```
 
+For LFANN, extract viewer-format regional-motion evidence from the mesh root,
+then supply the same output root to the viewer:
+
+```bash
+uv run meviewer extract \
+  --data-root "$LFANN_MESH_ROOT" \
+  --variant lfann-v3 \
+  --output-root "$MEDIAPIPE_ROOT" \
+  --model "$MEDIAPIPE_MODEL" \
+  --config assets/lfann-regional-motion-landmarks.json
+
+uv run meviewer viewer \
+  --data-root /path/to/data/dataset \
+  --mediapipe-root "$MEDIAPIPE_ROOT" \
+  --active-frames /path/to/data/active_frames.json
+```
+
+`--mediapipe-root` enables regional-motion evidence without creating review labels.
+Review PNGs are written only after selecting an exact path in the export dialog.
+
+| Input | Required | Resolution |
+|---|---|---|
+| `--data-root` | Yes | Dataset root. |
+| `--mesh-root`, `--active-frames` | Active frames: yes | Direct argument overrides `[viewer]`; otherwise manifest values apply. `--mesh-root` falls back to `--data-root`. |
+| `--raw-root` | No | Enables mesh-locked raw-video playback when matching MP4s and `ffprobe` exist. |
+| `--mediapipe-root` | No | Enables MediaPipe illustrations and regional-motion chart evidence. |
+| `--results-dir`, `--landmarks-root` | No | Add prediction and landmark diagnostics; mesh-only review remains available. |
+
+Direct arguments override `[viewer]` TOML defaults. A manifest supplies `mesh_root` and
+`active_frames` only when their direct arguments are omitted.
+
 The root launcher files were removed. Use the installed `meviewer` command;
 see `docs/breakingchange-unified-entry.md` for the migration contract.
 
@@ -77,26 +108,6 @@ uv run prek validate-config
 ```
 
 
-```bash
-meviewer audit --data-root /path/to/data/dataset \
-  --active-frames /path/to/data/active_frames.json \
-  --output /tmp/meview-dataset-audit.json
-meviewer viewer --data-root /path/to/data/dataset \
-  --active-frames /path/to/data/active_frames.json
-uv run --extra landmarks meviewer extract -C ../../config/lfann.toml
-```
-
-`meviewer audit` exits with `0` when the dataset is valid, `1` when validation
-fails, and `2` for invalid input or configuration. It writes a JSON report with
-`summary`, `baseline_errors`, and `sequences` fields. Both `meviewer viewer`
-and `meviewer extract` accept `-C`/`--config-file`; direct CLI arguments override
-loaded values.
-
-`--results-dir` and `--landmarks-root` are optional. The viewer remains usable
-as mesh-only QA when either source is absent. Mesh-only playback remains
-available without raw videos; mesh-locked raw-video playback requires the
-matching MP4 and `ffprobe` on `PATH`. Use `--self-test` only for the reference
-MEVIEW dataset regression check.
 
 The dataset must contain the MEVIEW V2/V3 mesh assets expected by the audit
 tool. Dataset files, results, raw videos, and release archives are intentionally

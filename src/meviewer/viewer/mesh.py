@@ -55,6 +55,7 @@ class MeshSequence:
         self.frames = index.frame_numbers
         self.current_frame = self.frames[0]
         self.reference_frame = self.frames[0]
+        self._diagnostic_percentiles: dict[tuple[str, int | None, float], float | None] = {}
 
     @classmethod
     def load(cls, index: SequenceIndex) -> MeshSequence:
@@ -118,30 +119,58 @@ class MeshSequence:
         previous_previous = self.frames[current_index - 2] if current_index >= 2 else None
         return previous, previous_previous
 
-    def diagnostics(self) -> dict[str, np.ndarray | None]:
-        current = self._vertex_frames.get(self.current_frame)
-        reference = self._vertex_frames.get(self.reference_frame)
-        previous, previous_previous = self.previous_frames()
-        velocity = (
-            None
-            if previous is None
-            else np.linalg.norm(current - self._vertex_frames.get(previous), axis=1)
-        )
-        acceleration = (
-            None
-            if previous is None or previous_previous is None
-            else np.linalg.norm(
-                current
-                - 2 * self._vertex_frames.get(previous)
-                + self._vertex_frames.get(previous_previous),
-                axis=1,
+    def _diagnostic_values(self, layer: str, frame_index: int) -> np.ndarray | None:
+        current = self._vertex_frames.get(self.frames[frame_index])
+        if layer == "displacement":
+            return np.linalg.norm(current - self._vertex_frames.get(self.reference_frame), axis=1)
+        if layer == "velocity":
+            return (
+                None
+                if frame_index == 0
+                else np.linalg.norm(
+                    current - self._vertex_frames.get(self.frames[frame_index - 1]), axis=1
+                )
             )
-        )
+        if layer == "acceleration":
+            return (
+                None
+                if frame_index < 2
+                else np.linalg.norm(
+                    current
+                    - 2 * self._vertex_frames.get(self.frames[frame_index - 1])
+                    + self._vertex_frames.get(self.frames[frame_index - 2]),
+                    axis=1,
+                )
+            )
+        raise ValueError(f"Unknown diagnostic layer: {layer}")
+
+    def diagnostics(self) -> dict[str, np.ndarray | None]:
+        frame_index = self.frames.index(self.current_frame)
         return {
-            "displacement": np.linalg.norm(current - reference, axis=1),
-            "velocity": velocity,
-            "acceleration": acceleration,
+            layer: self._diagnostic_values(layer, frame_index)
+            for layer in ("displacement", "velocity", "acceleration")
         }
+
+    def diagnostic_percentile(self, layer: str, percentile: float = 0.99) -> float | None:
+        """Return one stable whole-sequence percentile for a diagnostic layer."""
+        if layer not in {"displacement", "velocity", "acceleration"}:
+            raise ValueError(f"Unknown diagnostic layer: {layer}")
+        reference = self.reference_frame if layer == "displacement" else None
+        key = (layer, reference, percentile)
+        if key in self._diagnostic_percentiles:
+            return self._diagnostic_percentiles[key]
+        values = [
+            values
+            for number in range(len(self.frames))
+            if (values := self._diagnostic_values(layer, number)) is not None
+        ]
+        result = (
+            float(np.quantile(np.concatenate(values), percentile, method="lower"))
+            if values
+            else None
+        )
+        self._diagnostic_percentiles[key] = result
+        return result
 
     def pooling_bin(self, bin_number: int) -> tuple[np.ndarray, float]:
         current = self._vertex_frames.get(self.current_frame)

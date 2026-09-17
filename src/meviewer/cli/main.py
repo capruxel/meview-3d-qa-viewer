@@ -16,11 +16,18 @@ _COMMANDS = {
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help"}:
-        parser = argparse.ArgumentParser(description=__doc__)
-        parser.add_argument("command", choices=sorted(_COMMANDS), nargs="?")
-        parser.epilog = "\n".join(
-            f"  {name}: {description}" for name, (description, _) in _COMMANDS.items()
+        parser = argparse.ArgumentParser(
+            description="MEVIEW dataset audit, MediaPipe extraction, and interactive review tools.",
+            epilog=(
+                "Examples:\n"
+                "  meviewer audit --data-root /path/to/data --active-frames /path/to/active.json\n"
+                "  meviewer extract -C /path/to/config.toml\n"
+                "  meviewer viewer --data-root /path/to/data --active-frames /path/to/active.json\n"
+                "Use meviewer <command> --help for command-specific options."
+            ),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
         )
+        parser.add_argument("command", choices=sorted(_COMMANDS), nargs="?")
         parser.print_help()
         return 0
 
