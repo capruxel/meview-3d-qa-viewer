@@ -117,7 +117,7 @@ class RegionalMotionChart(QWidget):
         if len(self.frames) < 2:
             painter.end()
             return
-        left, right, top, bottom = 58, 10, 42, 22
+        left, right, top, bottom = 58, 10, 68, 32
         width, height = self.width() - left - right, self.height() - top - bottom
         xscale = width / (len(self.frames) - 1)
         indices = {frame: index for index, frame in enumerate(self.frames)}
@@ -134,13 +134,15 @@ class RegionalMotionChart(QWidget):
         ]
         painter.setPen(QColor("#f8fafc"))
         painter.drawText(left, 16, label)
-        legend_x = left + 92
-        for display, color, style in self._ROI_STYLES:
-            painter.setPen(QPen(QColor(color), 2, style))
-            painter.drawLine(legend_x, 12, legend_x + 16, 12)
-            painter.setPen(QColor("#f8fafc"))
-            painter.drawText(legend_x + 20, 16, display)
-            legend_x += 20 + painter.fontMetrics().horizontalAdvance(display) + 12
+        for row, offset in enumerate((0, 2)):
+            for col in range(2):
+                display, color, style = self._ROI_STYLES[offset + col]
+                legend_x = left + col * (width // 2)
+                y = 34 + row * 16
+                painter.setPen(QPen(QColor(color), 2, style))
+                painter.drawLine(legend_x, y - 4, legend_x + 16, y - 4)
+                painter.setPen(QColor("#f8fafc"))
+                painter.drawText(legend_x + 20, y, display)
         if not finite:
             painter.setPen(QColor("#f8fafc"))
             painter.drawText(
@@ -159,13 +161,20 @@ class RegionalMotionChart(QWidget):
                 height,
                 QColor("#f5b04130"),
             )
-        scale = max(abs(value) for value in finite)
-        scale = scale or 1.0
         zero = round(top + height / 2)
-        painter.setPen(QColor("#64748b"))
+        scale = max(abs(value) for value in finite)
+        painter.setPen(QColor("#475569"))
         painter.drawLine(left, zero, self.width() - right, zero)
+        painter.setPen(QColor("#cbd5e1"))
         painter.drawText(4, top + 10, f"{scale:.3g}")
         painter.drawText(4, top + height, f"{-scale:.3g}")
+        painter.drawText(left, self.height() - 8, str(self.frames[0]))
+        end_label = str(self.frames[-1])
+        painter.drawText(
+            self.width() - right - painter.fontMetrics().horizontalAdvance(end_label),
+            self.height() - 8,
+            end_label,
+        )
         for roi, (_, color, style) in zip(self._ROIS, self._ROI_STYLES, strict=True):
             points = series.get(roi, ())
             painter.setPen(QPen(QColor(color), 2, style))

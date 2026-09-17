@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +56,21 @@ def diagnostic_color_limits(maximum: float | None, *, auto: bool) -> tuple[float
     if not auto or maximum is None or maximum <= np.finfo(float).eps:
         return FIXED_MOTION_CLIM
     return (0.0, maximum)
+
+
+def diagnostic_scalar_bar_args(
+    metric: str, clim: tuple[float, float], *, auto: bool
+) -> dict[str, Any]:
+    return {
+        "title": f"{metric} (P99 {clim[1]:.3g})" if auto else f"{metric} (fixed 0–1)",
+        "vertical": True,
+        "width": 0.08,
+        "height": 0.55,
+        "position_x": 0.88,
+        "position_y": 0.22,
+        "title_font_size": 10,
+        "label_font_size": 8,
+    }
 
 
 class MeshViewer(QMainWindow):
@@ -655,13 +672,11 @@ class MeshViewer(QMainWindow):
                         cmap="turbo",
                         clim=clim,
                         show_scalar_bar=True,
-                        scalar_bar_args={
-                            "title": (
-                                f"diagnostic_motion (P99 {clim[1]:.3g})"
-                                if self.auto_contrast_toggle.isChecked()
-                                else "diagnostic_motion (fixed 0–1)"
-                            )
-                        },
+                        scalar_bar_args=diagnostic_scalar_bar_args(
+                            self.motion_layer.title(),
+                            clim,
+                            auto=self.auto_contrast_toggle.isChecked(),
+                        ),
                     )
                 elif mesh_style[2]:
                     mesh_args.update(scalars="vertex_colors", rgb=True)
@@ -835,23 +850,66 @@ class MeshViewer(QMainWindow):
                 self.raw_player.setPlaybackRate(self._raw_playback_rate())
                 self.raw_player.play()
             self.timer.start()
-            self._set_playing(True)
 
-    def update_timer_interval(self) -> None:
-        self.timer.setInterval(round(1000 / (self.fps_spin.value() * self.speed_spin.value())))
-        if self.timer.isActive() and self.raw_video is not None:
-            self.raw_player.setPlaybackRate(self._raw_playback_rate())
+    def _snapshot_paths(self, suffix: str = "") -> tuple[Path, Path]:
+        sequence = self.sequence
+        if sequence is None:
+            base = Path.cwd() / "meviewer.png"
+            return base, base.with_name(f"meviewer{suffix}.png")
+        directory = Path.cwd() / ".snapshot" / sequence.index.key.replace("/", "-")
+        stem = f"{sequence.index.subject}-{sequence.index.video}_frame{sequence.current_frame:03d}_meviewer"
+        return directory / f"{stem}.png", directory / f"{stem}{suffix}.png"
+
+    def _save_snapshot(self, title: str, suffix: str, save: Any) -> None:
+        base, _ = self._snapshot_paths(suffix)
+        path, _ = QFileDialog.getSaveFileName(self, title, str(base), "PNG image (*.png)")
+        if path:
+            output = Path(path)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if save(output):
+                self._export_raw_snapshot(output.with_name(f"{output.stem}-raw.png"))
+
+    def _export_raw_snapshot(self, output: Path) -> None:
+        raw, sequence = self.raw_video, self.sequence
+        if raw is None or sequence is None or not 1 <= sequence.current_frame <= raw.frame_count:
+            return
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            self.sequence_status.setText("Paired raw PNG not written: ffmpeg is unavailable")
+            return
+        try:
+            result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-i",
+                    str(raw.path),
+                    "-vf",
+                    f"select=eq(n\\,{sequence.current_frame - 1})",
+                    "-frames:v",
+                    "1",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            self.sequence_status.setText(f"Paired raw PNG not written: cannot run ffmpeg ({exc})")
+            return
+        if result.returncode:
+            self.sequence_status.setText(
+                f"Paired raw PNG not written: ffmpeg failed ({result.returncode})"
+            )
+
+    def screenshot(self) -> None:
+        self._save_snapshot(
+            "Save screenshot", "", lambda path: self.plotter.screenshot(str(path)) is not None
+        )
 
     def reset_camera(self) -> None:
         self.plotter.reset_camera()
         self.plotter.render()
-
-    def screenshot(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save screenshot", "mesh-qa.png", "PNG image (*.png)"
-        )
-        if path:
-            self.plotter.screenshot(path)
 
     def choose_landmark_color(self) -> None:
         color = QColorDialog.getColor(self.landmark_color, self, "Landmark color")
@@ -860,15 +918,9 @@ class MeshViewer(QMainWindow):
             self.refresh_view()
 
     def export_review(self) -> None:
-        index = self.snapshot.index
-        suggested = (
-            f"{index.key.replace('/', '-')}-review.png" if index is not None else "review.png"
+        self._save_snapshot(
+            "Export review PNG", "-review", lambda path: self.review_pane.grab().save(str(path))
         )
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export review PNG", suggested, "PNG image (*.png)"
-        )
-        if path:
-            self.review_pane.grab().save(path)
 
     def closeEvent(self, event: Any) -> None:
         self.timer.stop()
