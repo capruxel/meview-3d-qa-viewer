@@ -5,13 +5,27 @@ from types import SimpleNamespace
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMainWindow
 
-from meviewer.viewer.window import FIXED_MOTION_CLIM, MeshViewer, diagnostic_color_limits
+from meviewer.viewer.window import (
+    FIXED_MOTION_CLIM,
+    MeshViewer,
+    diagnostic_color_limits,
+    diagnostic_scalar_bar_args,
+)
 
 
 def test_diagnostic_color_limits_support_fixed_and_stable_auto_modes() -> None:
     assert diagnostic_color_limits(0.02, auto=False) == FIXED_MOTION_CLIM
     assert diagnostic_color_limits(0.02, auto=True) == (0.0, 0.02)
     assert diagnostic_color_limits(None, auto=True) == FIXED_MOTION_CLIM
+
+
+def test_diagnostic_scalar_bar_keeps_labels_readable() -> None:
+    args = diagnostic_scalar_bar_args("Velocity", (0.0, 0.00849), auto=True)
+
+    assert args["n_labels"] == 4
+    assert args["fmt"] == "%.3g"
+    assert args["width"] == 0.12
+    assert args["position_x"] == 0.76
 
 
 class _ReviewChart(QObject):
