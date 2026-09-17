@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (
-    QSlider,
-    QStyle,
-    QStyleOptionSlider,
-    QWidget,
-)
+from PySide6.QtWidgets import QSlider, QStyle, QStyleOptionSlider, QWidget
+
+from meviewer.viewer.session import RegionalMotionSeries
 
 
 class ActiveFrameSlider(QSlider):
@@ -22,7 +20,7 @@ class ActiveFrameSlider(QSlider):
         self.active_start: int | None = None
         self.active_end: int | None = None
         self.reference: int | None = None
-        self.setAccessibleName("Active-frame timeline")
+        self.setAccessibleName("Frame selector with active-window markers")
         self.setToolTip("Select a frame.")
 
     def set_markers(self, start: int | None, end: int | None, reference: int | None) -> None:
@@ -73,16 +71,16 @@ class RegionalMotionChart(QWidget):
         ("Left mouth corner", "#fbbf24", Qt.PenStyle.DotLine),
         ("Right mouth corner", "#f472b6", Qt.PenStyle.DashDotLine),
     )
-    _METRICS: dict[Literal["displacement", "velocity", "acceleration"], tuple[int, str, str]] = {
-        "displacement": (0, "Δy (up +)", "displacement"),
-        "velocity": (1, "v_y (up +)", "velocity"),
-        "acceleration": (2, "a_y (up +)", "acceleration"),
+    _METRICS: dict[Literal["displacement", "velocity", "acceleration"], tuple[str, str]] = {
+        "displacement": ("Δy (up +)", "displacement"),
+        "velocity": ("v_y (up +)", "velocity"),
+        "acceleration": ("a_y (up +)", "acceleration"),
     }
 
     def __init__(self) -> None:
         super().__init__()
         self.frames: tuple[int, ...] = ()
-        self.data: dict[str, tuple[tuple[float | None, ...], ...]] = {}
+        self.data: Mapping[str, RegionalMotionSeries] = {}
         self.active: tuple[int, int] | None = None
         self.selected = 0
         self.motion_metric: Literal["displacement", "velocity", "acceleration"] = "displacement"
@@ -91,21 +89,21 @@ class RegionalMotionChart(QWidget):
         self._set_accessibility()
 
     def _set_accessibility(self) -> None:
-        _, label, name = self._METRICS[self.motion_metric]
+        label, name = self._METRICS[self.motion_metric]
         self.setAccessibleName(f"Regional motion chart: {name}")
         self.setToolTip(f"{label} regional-motion evidence. Click to select a frame.")
 
     def set_data(
         self,
         frames: tuple[int, ...],
-        data: Any,
-        active: Any,
+        data: Mapping[str, RegionalMotionSeries],
+        active: tuple[int, int] | None,
         selected: int,
         *,
         metric: Literal["displacement", "velocity", "acceleration"] = "displacement",
         status: str | None = None,
     ) -> None:
-        self.frames, self.data, self.active, self.selected = frames, dict(data), active, selected
+        self.frames, self.data, self.active, self.selected = frames, data, active, selected
         self.motion_metric, self.status = metric, status
         self._set_accessibility()
         self.update()
@@ -121,11 +119,8 @@ class RegionalMotionChart(QWidget):
         width, height = self.width() - left - right, self.height() - top - bottom
         xscale = width / (len(self.frames) - 1)
         indices = {frame: index for index, frame in enumerate(self.frames)}
-        metric_index, label, _ = self._METRICS[self.motion_metric]
-        series = {
-            roi: values[metric_index] if len(values) > metric_index else ()
-            for roi, values in self.data.items()
-        }
+        label, _ = self._METRICS[self.motion_metric]
+        series = {roi: getattr(values, self.motion_metric) for roi, values in self.data.items()}
         finite = [
             float(value)
             for points in series.values()

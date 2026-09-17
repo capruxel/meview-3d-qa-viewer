@@ -8,6 +8,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from meviewer.viewer.session import RegionalMotionSeries
 from meviewer.viewer.widgets import ActiveFrameSlider, RegionalMotionChart
 
 
@@ -15,12 +16,18 @@ def app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def chart_data() -> dict[str, tuple[tuple[float | None, ...], ...]]:
+def chart_data() -> dict[str, RegionalMotionSeries]:
     return {
-        "left_brow": ((0.0, 1.0, 0.5), (None, 1.0, -0.5), (None, None, -1.5)),
-        "right_brow": ((0.0, 0.5, 0.25), (None, 0.5, -0.25), (None, None, -0.75)),
-        "left_mouth_corner": ((0.0, -0.5, -0.25), (None, -0.5, 0.25), (None, None, 0.75)),
-        "right_mouth_corner": ((0.0, -1.0, -0.5), (None, -1.0, 0.5), (None, None, 1.5)),
+        "left_brow": RegionalMotionSeries((0.0, 1.0, 0.5), (None, 1.0, -0.5), (None, None, -1.5)),
+        "right_brow": RegionalMotionSeries(
+            (0.0, 0.5, 0.25), (None, 0.5, -0.25), (None, None, -0.75)
+        ),
+        "left_mouth_corner": RegionalMotionSeries(
+            (0.0, -0.5, -0.25), (None, -0.5, 0.25), (None, None, 0.75)
+        ),
+        "right_mouth_corner": RegionalMotionSeries(
+            (0.0, -1.0, -0.5), (None, -1.0, 0.5), (None, None, 1.5)
+        ),
     }
 
 
@@ -68,6 +75,7 @@ def test_slider_exposes_only_frame_selection() -> None:
     slider.setRange(0, 2)
     slider.resize(400, 32)
     slider.set_markers(0, 1, 0)
+    assert slider.accessibleName() == "Frame selector with active-window markers"
     slider.show()
 
     assert not hasattr(slider, "drag_selected")

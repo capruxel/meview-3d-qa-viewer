@@ -197,6 +197,16 @@ def prediction_metadata(
 
 
 @dataclass(frozen=True)
+class RegionalMotionSeries:
+    displacement: tuple[float | None, ...]
+    velocity: tuple[float | None, ...]
+    acceleration: tuple[float | None, ...]
+
+
+_EMPTY_CHART_DATA: Mapping[str, RegionalMotionSeries] = MappingProxyType({})
+
+
+@dataclass(frozen=True)
 class ViewerSessionSnapshot:
     index: SequenceIndex | None = None
     sequence: MeshSequence | None = None
@@ -213,7 +223,7 @@ class ViewerSessionSnapshot:
     mediapipe_image: Path | None = None
     mediapipe_record: MediaPipeFrame | None = None
     mediapipe_error: str | None = None
-    chart_data: Mapping[str, tuple[tuple[float | None, ...], ...]] = _EMPTY_MAPPING
+    chart_data: Mapping[str, RegionalMotionSeries] = _EMPTY_CHART_DATA
     chart_status: str | None = None
 
 
@@ -302,7 +312,7 @@ class ViewerSession:
 
     def _build_chart_data(
         self, index: SequenceIndex, sequence: MeshSequence, active: tuple[int, int] | None
-    ) -> tuple[Mapping[str, tuple[tuple[float | None, ...], ...]], str | None]:
+    ) -> tuple[Mapping[str, RegionalMotionSeries], str | None]:
         names = ("left_brow", "right_brow", "left_mouth_corner", "right_mouth_corner")
         centers: dict[str, list[np.ndarray | None]] = {name: [] for name in names}
         candidate_records = 0
@@ -335,30 +345,30 @@ class ViewerSession:
                 centers[name].append(usable)
                 frame_usable |= usable is not None
             usable_frames += frame_usable
-        result: dict[str, tuple[tuple[float | None, ...], ...]] = {}
+        result: dict[str, RegionalMotionSeries] = {}
         for name, values in centers.items():
             baseline = (
                 values[sequence.frames.index(active[0])]
                 if active and active[0] in sequence.frames
                 else None
             )
-            displacement = [
+            displacement = tuple(
                 None if point is None or baseline is None else float(baseline[1] - point[1])
                 for point in values
-            ]
-            velocity = [
+            )
+            velocity = tuple(
                 None
                 if i < 1 or values[i] is None or values[i - 1] is None
                 else float(values[i - 1][1] - values[i][1])
                 for i in range(len(values))
-            ]
-            acceleration = [
+            )
+            acceleration = tuple(
                 None
                 if (i < 2 or values[i] is None or values[i - 1] is None or values[i - 2] is None)
                 else float(2 * values[i - 1][1] - values[i][1] - values[i - 2][1])
                 for i in range(len(values))
-            ]
-            result[name] = (tuple(displacement), tuple(velocity), tuple(acceleration))
+            )
+            result[name] = RegionalMotionSeries(displacement, velocity, acceleration)
         if usable_frames:
             status = (
                 None

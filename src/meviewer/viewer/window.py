@@ -771,23 +771,47 @@ class MeshViewer(QMainWindow):
     ) -> None:
         sequence = self.snapshot.sequence
         assert sequence is not None
+        points = sequence.mesh.points
         active = self.snapshot.active_frames
         prediction = self.snapshot.prediction
+        motion = [
+            f"{name}: unavailable"
+            if values is None
+            else f"{name}: max={values.max():.6g}, mean={values.mean():.6g}"
+            for name, values in diagnostics.items()
+        ]
+        if self.pooling_toggle.isChecked() and hasattr(self, "_pooling_response"):
+            motion.append(
+                f"pooling debug bin {self.pool_bin.value()}: max response={self._pooling_response:.6g}"
+            )
         summary = (
             "Prediction mapping unavailable"
             if prediction is None
             else f"Prediction: {prediction['true_label']} → {prediction['predicted_label']} "
             f"({'correct' if prediction['correct'] == 'True' else 'wrong'})"
         )
+        warning = "\n".join(self.snapshot.prediction_warnings)
+        metric = self.snapshot.metrics
+        metric_text = (
+            f"Metrics: accuracy={metric.get('accuracy', 'n/a')}, "
+            f"UAR={metric.get('uar', 'n/a')}, UF1={metric.get('uf1', 'n/a')}"
+        )
         self.info.setText(
             "\n".join(
                 (
                     f"Sequence: {sequence.index.key}",
                     f"Current: F{sequence.current_frame}; reference: F{sequence.reference_frame}",
+                    f"File: {sequence.index.asset_path(sequence.current_frame, 'vertices')}",
+                    f"Vertices/faces: {sequence.mesh.n_points}/{sequence.mesh.n_cells}",
+                    f"Bounds: min={points.min(axis=0).round(5).tolist()} "
+                    f"max={points.max(axis=0).round(5).tolist()}",
                     f"Active window: F{active[0]}–F{active[1]}"
                     if active
                     else "Active window: unavailable",
+                    *motion,
                     summary,
+                    metric_text,
+                    warning,
                 )
             )
         )
