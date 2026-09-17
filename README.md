@@ -36,8 +36,7 @@ meviewer extract --data-root /path/to/data/dataset \
   --output-root /path/to/records \
   --model /path/to/face_landmarker.task
 meviewer viewer --data-root /path/to/data/dataset \
-  --active-frames /path/to/data/active_frames.json \
-  --annotation-output /path/to/review/annotations.json
+  --active-frames /path/to/data/active_frames.json
 ```
 
 For LFANN, extract viewer-format regional-motion evidence from the mesh root,
@@ -54,13 +53,11 @@ uv run meviewer extract \
 uv run meviewer viewer \
   --data-root /path/to/data/dataset \
   --mediapipe-root "$MEDIAPIPE_ROOT" \
-  --active-frames /path/to/data/active_frames.json \
-  --annotation-output /path/to/review/annotations.json
+  --active-frames /path/to/data/active_frames.json
 ```
 
-Regional-motion annotations are read from and written only to the explicit
-`--annotation-output` path. Review PNGs are written only after selecting an
-exact path in the export dialog.
+`--mediapipe-root` enables regional-motion evidence without creating review labels.
+Review PNGs are written only after selecting an exact path in the export dialog.
 
 | Input | Required | Resolution |
 |---|---|---|
@@ -69,7 +66,6 @@ exact path in the export dialog.
 | `--raw-root` | No | Enables mesh-locked raw-video playback when matching MP4s and `ffprobe` exist. |
 | `--mediapipe-root` | No | Enables MediaPipe illustrations and regional-motion chart evidence. |
 | `--results-dir`, `--landmarks-root` | No | Add prediction and landmark diagnostics; mesh-only review remains available. |
-| `--annotation-output` | Interactive mode | The sole annotation read/write path; `--self-test` neither opens Qt nor requires it. |
 
 Direct arguments override `[viewer]` TOML defaults. A manifest supplies `mesh_root` and
 `active_frames` only when their direct arguments are omitted.

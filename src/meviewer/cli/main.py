@@ -22,8 +22,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "Examples:\n"
                 "  meviewer audit --data-root /path/to/data --active-frames /path/to/active.json\n"
                 "  meviewer extract -C /path/to/config.toml\n"
-                "  meviewer viewer --data-root /path/to/data --active-frames /path/to/active.json "
-                "--annotation-output /path/to/annotations.json\n"
+                "  meviewer viewer --data-root /path/to/data --active-frames /path/to/active.json\n"
                 "Use meviewer <command> --help for command-specific options."
             ),
             formatter_class=argparse.RawDescriptionHelpFormatter,

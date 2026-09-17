@@ -66,11 +66,8 @@ def self_test(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Inspect mesh sequences and persist regional-motion annotations.",
-        epilog=(
-            "Direct arguments override [viewer] TOML defaults. --self-test does not open Qt "
-            "or require --annotation-output."
-        ),
+        description="Inspect mesh sequences and regional-motion evidence.",
+        epilog="Direct arguments override [viewer] TOML defaults. --self-test does not open Qt.",
     )
     add_config_argument(parser)
     parser.add_argument("--data-root", type=Path, help="Required dataset root.")
@@ -82,14 +79,9 @@ def main() -> int:
     parser.add_argument("--landmarks-root", type=Path, help="Optional landmark mapping directory.")
     parser.add_argument("--mediapipe-root", type=Path, help="Optional MediaPipe frame-record root.")
     parser.add_argument(
-        "--annotation-output",
-        type=Path,
-        help="Required in interactive mode; the only annotation read/write JSON path.",
-    )
-    parser.add_argument(
         "--self-test",
         action="store_true",
-        help="Validate the reference dataset without opening Qt or requiring annotations.",
+        help="Validate the reference dataset without opening Qt.",
     )
     apply_config_defaults(parser, "viewer")
     args = parser.parse_args()
@@ -109,8 +101,6 @@ def main() -> int:
         except ValueError as exc:
             print(f"viewer self-test failed: {exc}", file=sys.stderr)
             return 1
-    if args.annotation_output is None:
-        parser.error("--annotation-output is required in interactive mode")
     app = QApplication(sys.argv)
     window = MeshViewer(
         args.data_root,
@@ -120,7 +110,6 @@ def main() -> int:
         args.results_dir,
         args.landmarks_root,
         args.mediapipe_root,
-        args.annotation_output,
     )
     window.resize(1600, 950)
     window.show()

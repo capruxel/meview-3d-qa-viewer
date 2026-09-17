@@ -17,37 +17,13 @@ from PySide6.QtWidgets import (
 
 
 class ActiveFrameSlider(QSlider):
-    drag_selected = Signal(int, int)
-
     def __init__(self) -> None:
         super().__init__(Qt.Orientation.Horizontal)
         self.active_start: int | None = None
         self.active_end: int | None = None
         self.reference: int | None = None
-        self.annotation_markers: list[tuple[int, int]] = []
-        self._drag_start: int | None = None
         self.setAccessibleName("Active-frame timeline")
-        self.setToolTip("Click to select a frame. Drag to set an inclusive annotation interval.")
-
-    def set_annotation_markers(self, markers: list[tuple[int, int]]) -> None:
-        self.annotation_markers = markers
-        self.update()
-
-    def mousePressEvent(self, event: Any) -> None:
-        self._drag_start = self._value_from_x(event.position().x())
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event: Any) -> None:
-        if self._drag_start is not None:
-            end = self._value_from_x(event.position().x())
-            if end != self._drag_start:
-                self.drag_selected.emit(min(self._drag_start, end), max(self._drag_start, end))
-        self._drag_start = None
-        super().mouseReleaseEvent(event)
-
-    def _value_from_x(self, x: float) -> int:
-        width = max(1, self.width() - 16)
-        return max(self.minimum(), min(self.maximum(), round((x - 8) / width * self.maximum())))
+        self.setToolTip("Select a frame.")
 
     def set_markers(self, start: int | None, end: int | None, reference: int | None) -> None:
         self.active_start, self.active_end, self.reference = start, end, reference
@@ -80,10 +56,6 @@ class ActiveFrameSlider(QSlider):
             painter.drawRoundedRect(start, groove.y() - 2, max(3, end - start + 1), 4, 2, 2)
             painter.setPen(QColor("#e6a23c"))
             painter.drawLine(start, marker_top, start, marker_bottom)
-        painter.setPen(QColor("#e67e22"))
-        for start, end in self.annotation_markers:
-            painter.drawLine(position(start), marker_top - 3, position(start), marker_bottom + 3)
-            painter.drawLine(position(end), marker_top - 3, position(end), marker_bottom + 3)
         if self.reference is not None:
             reference = position(self.reference)
             painter.setPen(QColor("#5dade2"))
@@ -93,7 +65,6 @@ class ActiveFrameSlider(QSlider):
 
 class RegionalMotionChart(QWidget):
     frame_selected = Signal(int)
-    drag_selected = Signal(int, int)
 
     _ROIS = ("left_brow", "right_brow", "left_mouth_corner", "right_mouth_corner")
     _ROI_STYLES = (
@@ -114,20 +85,15 @@ class RegionalMotionChart(QWidget):
         self.data: dict[str, tuple[tuple[float | None, ...], ...]] = {}
         self.active: tuple[int, int] | None = None
         self.selected = 0
-        self.annotations: tuple[Any, ...] = ()
         self.motion_metric: Literal["displacement", "velocity", "acceleration"] = "displacement"
         self.status: str | None = None
-        self._drag_start: int | None = None
         self.setMinimumHeight(320)
         self._set_accessibility()
 
     def _set_accessibility(self) -> None:
         _, label, name = self._METRICS[self.motion_metric]
         self.setAccessibleName(f"Regional motion chart: {name}")
-        self.setToolTip(
-            f"{label} regional-motion evidence. Click to select a frame. "
-            "Drag to set an inclusive annotation interval."
-        )
+        self.setToolTip(f"{label} regional-motion evidence. Click to select a frame.")
 
     def set_data(
         self,
@@ -135,18 +101,11 @@ class RegionalMotionChart(QWidget):
         data: Any,
         active: Any,
         selected: int,
-        annotations: Any,
         *,
         metric: Literal["displacement", "velocity", "acceleration"] = "displacement",
         status: str | None = None,
     ) -> None:
-        self.frames, self.data, self.active, self.selected, self.annotations = (
-            frames,
-            dict(data),
-            active,
-            selected,
-            annotations,
-        )
+        self.frames, self.data, self.active, self.selected = frames, dict(data), active, selected
         self.motion_metric, self.status = metric, status
         self._set_accessibility()
         self.update()
@@ -200,16 +159,6 @@ class RegionalMotionChart(QWidget):
                 height,
                 QColor("#f5b04130"),
             )
-        for item in self.annotations:
-            if item.start_frame in indices and item.end_frame in indices:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor("#fb923c80"))
-                painter.drawRect(
-                    round(left + indices[item.start_frame] * xscale),
-                    top,
-                    max(3, round((indices[item.end_frame] - indices[item.start_frame]) * xscale)),
-                    height,
-                )
         scale = max(abs(value) for value in finite)
         scale = scale or 1.0
         zero = round(top + height / 2)
@@ -248,18 +197,9 @@ class RegionalMotionChart(QWidget):
             ),
         )
 
-    def mousePressEvent(self, event: Any) -> None:
-        self._drag_start = self._index_from_x(event.position().x())
-        super().mousePressEvent(event)
-
     def mouseReleaseEvent(self, event: Any) -> None:
-        if self._drag_start is not None:
-            end = self._index_from_x(event.position().x())
-            if end == self._drag_start:
-                self.frame_selected.emit(end)
-            else:
-                self.drag_selected.emit(min(self._drag_start, end), max(self._drag_start, end))
-        self._drag_start = None
+        if event.button() == Qt.MouseButton.LeftButton and self.frames:
+            self.frame_selected.emit(self._index_from_x(event.position().x()))
         super().mouseReleaseEvent(event)
 
 

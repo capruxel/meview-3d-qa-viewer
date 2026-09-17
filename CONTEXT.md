@@ -15,8 +15,3 @@ _Avoid_: range, timeline
 **MediaPipe frame record**:
 The normalized landmark result associated with one mesh sequence frame.
 _Avoid_: landmark file, face result
-
-**Regional-motion annotation**:
-An inclusive frame interval in one mesh sequence and canonical RoI, recording a human
-motion direction, confidence, and optional explanatory note.
-_Avoid_: class label, landmark curve

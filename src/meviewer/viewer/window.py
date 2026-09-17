@@ -22,9 +22,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -39,7 +37,6 @@ from PySide6.QtWidgets import (
 )
 from pyvistaqt import QtInteractor
 
-from meviewer.annotations import BROW_DIRECTIONS, MOUTH_DIRECTIONS, ROIS, RegionalMotionAnnotation
 from meviewer.assets import SequenceIndex
 from meviewer.viewer.session import (
     LandmarkMapping,
@@ -69,7 +66,6 @@ class MeshViewer(QMainWindow):
         results_dir: Path | None,
         landmarks_root: Path | None,
         mediapipe_root: Path | None = None,
-        annotation_output: Path | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("MEVIEW 3D QA Viewer")
@@ -81,7 +77,6 @@ class MeshViewer(QMainWindow):
             results_dir,
             landmarks_root,
             mediapipe_root,
-            annotation_output,
         )
         self.snapshot = self.session.snapshot
         self.landmark_color = QColor("#ffcc00")
@@ -313,48 +308,6 @@ class MeshViewer(QMainWindow):
         self.advanced_debug.layout().addWidget(advanced_body)
         layout.addWidget(self.advanced_debug)
 
-        self.review_conclusion = QGroupBox("Review conclusion")
-        self.review_conclusion.setCheckable(True)
-        self.review_conclusion.setChecked(False)
-        annotation_body = QWidget()
-        annotation_layout = QFormLayout(annotation_body)
-        self.review_conclusion.toggled.connect(annotation_body.setVisible)
-        annotation_body.setVisible(False)
-        self.annotation_rows = QComboBox()
-        self.annotation_roi = QComboBox()
-        self.annotation_roi.addItems(ROIS)
-        self.annotation_direction = QComboBox()
-        self.annotation_confidence = QSpinBox()
-        self.annotation_confidence.setRange(1, 3)
-        self.annotation_start = QComboBox()
-        self.annotation_end = QComboBox()
-        self.annotation_note = QLineEdit()
-        self.annotation_note.setPlaceholderText("Optional reviewer note")
-        self.annotation_save = QPushButton("Save interval")
-        self.annotation_delete = QPushButton("Delete selected")
-        self.annotation_reload = QPushButton("Reload annotations")
-        self.annotation_status = QLabel()
-        self.annotation_status.setWordWrap(True)
-        self.annotation_rows.currentIndexChanged.connect(self._load_annotation_controls)
-        self.annotation_roi.currentTextChanged.connect(self._set_direction_choices)
-        self.annotation_save.clicked.connect(self.save_annotation_interval)
-        self.annotation_delete.clicked.connect(self.delete_selected_annotation)
-        self.annotation_reload.clicked.connect(self.reload_annotations)
-        annotation_layout.addRow("Existing", self.annotation_rows)
-        annotation_layout.addRow("RoI", self.annotation_roi)
-        annotation_layout.addRow("Direction", self.annotation_direction)
-        annotation_layout.addRow("Confidence", self.annotation_confidence)
-        annotation_layout.addRow("Start frame", self.annotation_start)
-        annotation_layout.addRow("End frame", self.annotation_end)
-        annotation_layout.addRow("Note", self.annotation_note)
-        annotation_layout.addRow(self.annotation_save)
-        annotation_layout.addRow(self.annotation_delete)
-        annotation_layout.addRow(self.annotation_reload)
-        annotation_layout.addRow("Status", self.annotation_status)
-        self.review_conclusion.setLayout(QVBoxLayout())
-        self.review_conclusion.layout().addWidget(annotation_body)
-        layout.addWidget(self.review_conclusion)
-        self._set_direction_choices()
         return panel
 
     def _player(self) -> QWidget:
@@ -363,9 +316,7 @@ class MeshViewer(QMainWindow):
         self.timeline = ActiveFrameSlider()
         self.timeline.setMinimumHeight(28)
         self.timeline.valueChanged.connect(self.set_frame_by_index)
-        self.timeline.drag_selected.connect(self.prepare_annotation_interval)
         self.review_chart.frame_selected.connect(self.set_frame_by_index)
-        self.review_chart.drag_selected.connect(self.prepare_annotation_interval)
         for icon, name, callback in (
             (QStyle.StandardPixmap.SP_MediaSkipBackward, "First frame", self.first_frame),
             (QStyle.StandardPixmap.SP_MediaSeekBackward, "Previous frame", self.previous_frame),
@@ -588,93 +539,17 @@ class MeshViewer(QMainWindow):
             self.mediapipe_image.status = self.snapshot.mediapipe_error
             self.mediapipe_image.update()
 
-    def _set_direction_choices(self) -> None:
-        choices = (
-            BROW_DIRECTIONS if "brow" in self.annotation_roi.currentText() else MOUTH_DIRECTIONS
-        )
-        current = self.annotation_direction.currentText()
-        with QSignalBlocker(self.annotation_direction):
-            self.annotation_direction.clear()
-            self.annotation_direction.addItems(sorted(choices))
-            self.annotation_direction.setCurrentText(
-                current if current in choices else "not_observable"
-            )
-
-    def _selected_annotation_index(self) -> int | None:
-        selected = self.annotation_rows.currentData()
-        return selected if isinstance(selected, int) else None
-
-    def _load_annotation_controls(self) -> None:
-        selected = self._selected_annotation_index()
-        sequence = self.snapshot.sequence
-        if sequence is None:
-            return
-        self.annotation_delete.setEnabled(
-            selected is not None and selected < len(self.snapshot.annotations)
-        )
-        if selected is None or selected >= len(self.snapshot.annotations):
-            self._set_annotation_interval_controls(sequence.current_frame, sequence.current_frame)
-            return
-        item = self.snapshot.annotations[selected]
-        with (
-            QSignalBlocker(self.annotation_roi),
-            QSignalBlocker(self.annotation_direction),
-            QSignalBlocker(self.annotation_confidence),
-            QSignalBlocker(self.annotation_note),
-        ):
-            self.annotation_roi.setCurrentText(item.roi_name)
-            self._set_direction_choices()
-            self.annotation_direction.setCurrentText(item.direction)
-            self.annotation_confidence.setValue(item.confidence)
-            self.annotation_note.setText(item.note)
-        self._set_annotation_interval_controls(item.start_frame, item.end_frame)
-
-    def _set_annotation_interval_controls(self, start_frame: int, end_frame: int) -> None:
-        sequence = self.snapshot.sequence
-        if sequence is None:
-            return
-        with QSignalBlocker(self.annotation_start), QSignalBlocker(self.annotation_end):
-            for control, frame in (
-                (self.annotation_start, start_frame),
-                (self.annotation_end, end_frame),
-            ):
-                control.clear()
-                for value in sequence.frames:
-                    control.addItem(f"F{value}", value)
-                control.setCurrentIndex(control.findData(frame))
-
     def _sync_review(self) -> None:
         sequence = self.snapshot.sequence
         if sequence is None:
             return
-        annotations = self.snapshot.annotations
-        markers = [
-            (sequence.frames.index(item.start_frame), sequence.frames.index(item.end_frame))
-            for item in annotations
-        ]
-        self.timeline.set_annotation_markers(markers)
         self._render_review_chart()
         active = self.snapshot.active_frames
         active_text = f"F{active[0]}–F{active[1]}" if active else "unavailable"
         self.chart_status.setText(self.snapshot.chart_status or "")
         self.review_context.setText(
-            f"{sequence.index.key} · current F{sequence.current_frame} · active window {active_text} "
-            f"· Review labels: {len(annotations)}"
+            f"{sequence.index.key} · current F{sequence.current_frame} · active window {active_text}"
         )
-        with QSignalBlocker(self.annotation_rows):
-            current = self._selected_annotation_index()
-            self.annotation_rows.clear()
-            self.annotation_rows.addItem("New interval", None)
-            for number, item in enumerate(annotations):
-                self.annotation_rows.addItem(
-                    f"{item.roi_name}: F{item.start_frame}–F{item.end_frame} · {item.direction}",
-                    number,
-                )
-            if current is not None and current < len(annotations):
-                self.annotation_rows.setCurrentIndex(current + 1)
-            else:
-                self.annotation_rows.setCurrentIndex(0)
-        self._load_annotation_controls()
 
     def _render_review_chart(self) -> None:
         sequence = self.snapshot.sequence
@@ -685,103 +560,9 @@ class MeshViewer(QMainWindow):
             self.snapshot.chart_data,
             self.snapshot.active_frames,
             sequence.frames.index(sequence.current_frame),
-            self.snapshot.annotations,
             metric=self.motion_metric.currentText().lower(),
             status=self.snapshot.chart_status,
         )
-
-    def prepare_annotation_interval(self, start_index: int, end_index: int) -> None:
-        sequence = self.snapshot.sequence
-        if sequence is None:
-            return
-        start_index, end_index = sorted((start_index, end_index))
-        if not (0 <= start_index < len(sequence.frames) and 0 <= end_index < len(sequence.frames)):
-            return
-        with QSignalBlocker(self.annotation_rows):
-            self.annotation_rows.setCurrentIndex(0)
-        self._load_annotation_controls()
-        self._set_annotation_interval_controls(
-            sequence.frames[start_index], sequence.frames[end_index]
-        )
-        self.review_conclusion.setChecked(True)
-
-    def apply_annotation_interval(self, start_index: int, end_index: int) -> None:
-        sequence = self.snapshot.sequence
-        index = self.snapshot.index
-        if sequence is None or index is None:
-            return
-        selected = self._selected_annotation_index()
-        item = RegionalMotionAnnotation(
-            sequence=index.key,
-            roi_name=self.annotation_roi.currentText(),
-            start_frame=sequence.frames[start_index],
-            end_frame=sequence.frames[end_index],
-            direction=self.annotation_direction.currentText(),
-            confidence=self.annotation_confidence.value(),
-            note=self.annotation_note.text(),
-        )
-        annotations = list(self.snapshot.annotations)
-        if selected is None:
-            annotations.append(item)
-        else:
-            annotations[selected] = item
-        try:
-            self.snapshot = self.session.save_annotations(tuple(annotations))
-        except ValueError as exc:
-            self.annotation_status.setText(f"Not saved: {exc}")
-            return
-        self.annotation_status.setText(
-            f"Saved {item.roi_name} F{item.start_frame}–F{item.end_frame}"
-        )
-        self._sync_review()
-
-    def save_annotation_interval(self) -> None:
-        sequence = self.snapshot.sequence
-        if sequence is None:
-            return
-        start_frame = self.annotation_start.currentData()
-        end_frame = self.annotation_end.currentData()
-        if not isinstance(start_frame, int) or not isinstance(end_frame, int):
-            self.annotation_status.setText("Not saved: choose start and end frames")
-            return
-        self.apply_annotation_interval(
-            sequence.frames.index(start_frame), sequence.frames.index(end_frame)
-        )
-
-    def delete_selected_annotation(self) -> None:
-        selected = self._selected_annotation_index()
-        if selected is None:
-            return
-        item = self.snapshot.annotations[selected]
-        answer = QMessageBox.question(
-            self,
-            "Delete annotation",
-            f"Delete {item.roi_name} from F{item.start_frame} through F{item.end_frame}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        annotations = list(self.snapshot.annotations)
-        annotations.pop(selected)
-        try:
-            self.snapshot = self.session.save_annotations(tuple(annotations))
-        except ValueError as exc:
-            self.annotation_status.setText(f"Not deleted: {exc}")
-            return
-        self.annotation_status.setText(
-            f"Deleted {item.roi_name} F{item.start_frame}–F{item.end_frame}"
-        )
-        self._sync_review()
-
-    def reload_annotations(self) -> None:
-        try:
-            self.snapshot = self.session.reload_annotations()
-        except ValueError as exc:
-            self.annotation_status.setText(f"Not reloaded: {exc}")
-            return
-        self.annotation_status.setText("Reloaded annotations")
-        self._sync_review()
 
     def set_reference_to_current(self) -> None:
         sequence = self.snapshot.sequence

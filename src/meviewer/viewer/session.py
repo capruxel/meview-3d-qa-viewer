@@ -11,12 +11,6 @@ from typing import Any
 
 import numpy as np
 
-from meviewer.annotations import (
-    AnnotationDocument,
-    RegionalMotionAnnotation,
-    load_annotation_document,
-    save_annotation_document,
-)
 from meviewer.assets import SequenceIndex, load_active_frames, scan_sequences
 from meviewer.mediapipe import MediaPipeFrame, load_mediapipe_frame, mediapipe_frame_path
 from meviewer.viewer.mesh import MeshSequence
@@ -219,7 +213,6 @@ class ViewerSessionSnapshot:
     mediapipe_image: Path | None = None
     mediapipe_record: MediaPipeFrame | None = None
     mediapipe_error: str | None = None
-    annotations: tuple[RegionalMotionAnnotation, ...] = ()
     chart_data: Mapping[str, tuple[tuple[float | None, ...], ...]] = _EMPTY_MAPPING
     chart_status: str | None = None
 
@@ -234,18 +227,11 @@ class ViewerSession:
         results_dir: Path | None,
         landmarks_root: Path | None,
         mediapipe_root: Path | None,
-        annotation_output: Path | None = None,
     ) -> None:
         sequences = scan_sequences(mesh_root)
         if not sequences:
             sequences = scan_sequences(mesh_root, {"lfann-v3": mesh_root})
         self.indices = MappingProxyType({sequence.key: sequence for sequence in sequences})
-        self._annotation_output = annotation_output
-        self._annotations = (
-            load_annotation_document(annotation_output, self.indices)
-            if annotation_output is not None
-            else AnnotationDocument()
-        )
         self._raw_root = raw_root
         self._active_frames = load_active_frames(active_frames_path)
         self._metadata = sequence_metadata(data_root)
@@ -278,9 +264,6 @@ class ViewerSession:
             prediction=None if prediction is None else _mapping(prediction),
             metrics=_mapping(self._metrics.get(index.variant, {})),
             prediction_warnings=tuple(self._prediction_warnings),
-            annotations=tuple(
-                item for item in self._annotations.annotations if item.sequence == key
-            ),
         )
         try:
             sequence = MeshSequence.load(index)
@@ -431,39 +414,4 @@ class ViewerSession:
             self._snapshot = replace(self._snapshot, mediapipe_error=str(exc))
             return self._snapshot
         self._snapshot = replace(self._snapshot, mediapipe_record=record)
-        return self._snapshot
-
-    def reload_annotations(self) -> ViewerSessionSnapshot:
-        if self._annotation_output is None:
-            self._annotations = AnnotationDocument()
-        else:
-            self._annotations = load_annotation_document(self._annotation_output, self.indices)
-        selected = self._snapshot.index
-        self._snapshot = replace(
-            self._snapshot,
-            annotations=tuple(
-                item
-                for item in self._annotations.annotations
-                if selected is not None and item.sequence == selected.key
-            ),
-        )
-        return self._snapshot
-
-    def save_annotations(
-        self, annotations: tuple[RegionalMotionAnnotation, ...]
-    ) -> ViewerSessionSnapshot:
-        selected = self._snapshot.index
-        all_items = (
-            tuple(
-                item
-                for item in self._annotations.annotations
-                if selected is None or item.sequence != selected.key
-            )
-            + annotations
-        )
-        document = AnnotationDocument(all_items)
-        if self._annotation_output is not None:
-            save_annotation_document(self._annotation_output, document, self.indices)
-        self._annotations = document
-        self._snapshot = replace(self._snapshot, annotations=annotations)
         return self._snapshot

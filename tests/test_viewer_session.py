@@ -36,6 +36,7 @@ def test_selection_and_transitions_are_snapshots(tmp_path: Path) -> None:
     assert snapshot.mediapipe_image == tmp_path / "mesh/sub01/01/001_frontal_illustration.jpg"
     assert snapshot.raw_video_error == "Raw video root not configured"
     assert snapshot.mediapipe_error is None
+    assert snapshot.active_frames == (2, 2)
     assert session.set_frame(2).sequence.current_frame == 2
     assert session.set_reference(1).sequence.reference_frame == 1
 
