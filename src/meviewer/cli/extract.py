@@ -82,6 +82,8 @@ def main() -> int:
         ) from exc
 
     indices = scan_sequences(args.data_root)
+    if not indices:
+        indices = scan_sequences(args.data_root, {"lfann-v3": args.data_root})
     if args.variant:
         indices = [index for index in indices if index.variant == args.variant]
     if not indices:
