@@ -55,6 +55,7 @@ class MeshSequence:
         self.frames = index.frame_numbers
         self.current_frame = self.frames[0]
         self.reference_frame = self.frames[0]
+        self._diagnostic_percentiles: dict[tuple[str, int | None], float | None] = {}
 
     @classmethod
     def load(cls, index: SequenceIndex) -> MeshSequence:
@@ -142,6 +143,46 @@ class MeshSequence:
             "velocity": velocity,
             "acceleration": acceleration,
         }
+
+    def diagnostic_percentile(self, layer: str, percentile: float = 0.99) -> float | None:
+        """Return one stable whole-sequence percentile for a diagnostic layer."""
+        if layer not in {"displacement", "velocity", "acceleration"}:
+            raise ValueError(f"Unknown diagnostic layer: {layer}")
+        reference = self.reference_frame if layer == "displacement" else None
+        key = (layer, reference)
+        if key in self._diagnostic_percentiles:
+            return self._diagnostic_percentiles[key]
+        reference_points = (
+            self._vertex_frames.get(self.reference_frame) if layer == "displacement" else None
+        )
+        values: list[np.ndarray] = []
+        for number, frame in enumerate(self.frames):
+            current = self._vertex_frames.get(frame)
+            if layer == "displacement":
+                assert reference_points is not None
+                values.append(np.linalg.norm(current - reference_points, axis=1))
+            elif layer == "velocity" and number:
+                values.append(
+                    np.linalg.norm(
+                        current - self._vertex_frames.get(self.frames[number - 1]), axis=1
+                    )
+                )
+            elif layer == "acceleration" and number > 1:
+                values.append(
+                    np.linalg.norm(
+                        current
+                        - 2 * self._vertex_frames.get(self.frames[number - 1])
+                        + self._vertex_frames.get(self.frames[number - 2]),
+                        axis=1,
+                    )
+                )
+        result = (
+            float(np.quantile(np.concatenate(values), percentile, method="lower"))
+            if values
+            else None
+        )
+        self._diagnostic_percentiles[key] = result
+        return result
 
     def pooling_bin(self, bin_number: int) -> tuple[np.ndarray, float]:
         current = self._vertex_frames.get(self.current_frame)

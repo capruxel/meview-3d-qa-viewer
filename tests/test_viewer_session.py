@@ -40,6 +40,35 @@ def test_selection_and_transitions_are_snapshots(tmp_path: Path) -> None:
     assert session.set_reference(1).sequence.reference_frame == 1
 
 
+def test_sequence_diagnostic_limits_remain_stable_between_frames(tmp_path: Path) -> None:
+    session = make_session(tmp_path)
+    sequence = session.select("lfann-v3/sub01/01").sequence
+    assert sequence is not None
+
+    assert sequence.diagnostic_percentile("displacement") == 1.0
+    assert sequence.diagnostic_percentile("velocity") == 1.0
+    assert sequence.diagnostic_percentile("acceleration") is None
+    sequence.set_frame(2)
+    assert sequence.diagnostic_percentile("displacement") == 1.0
+
+
+def test_standard_mesh_root_discovers_every_variant(tmp_path: Path) -> None:
+    mesh_root = tmp_path / "mesh"
+    variants = {
+        "v2": "frontal_meshes_MEVIEW_v2",
+        "v3": "frontal_meshes_MEVIEW_v3",
+        "lfann-v3": "frontal_meshes_LFANN_v3",
+    }
+    for directory in variants.values():
+        (mesh_root / directory / "sub01" / "01").mkdir(parents=True)
+    active_frames = tmp_path / "active.json"
+    active_frames.write_text(json.dumps({"sub01_01": {"onset": 1, "offset": 1}}))
+
+    session = ViewerSession(tmp_path, mesh_root, None, active_frames, None, None, None)
+
+    assert set(session.indices) == {f"{variant}/sub01/01" for variant in variants}
+
+
 def test_invalid_mediapipe_record_is_nonfatal(tmp_path: Path) -> None:
     mediapipe_root = tmp_path / "mediapipe"
     record = mediapipe_root / "lfann-v3" / "sub01" / "01" / "001.npz"
