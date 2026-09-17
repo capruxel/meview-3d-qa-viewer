@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 def load(path: Path, data_root: Path) -> dict[str, Path]:
+    data_root = data_root.resolve()
     try:
         with path.open("rb") as handle:
             document = tomllib.load(handle)
